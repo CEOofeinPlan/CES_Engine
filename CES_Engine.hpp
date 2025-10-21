@@ -329,6 +329,10 @@ namespace CES {
 
     #endif
 
+    #ifdef CES_GRID_SYSTEM
+
+    #endif
+
     #ifdef CES_COLOR_UNIT
         // Its not necessary during an easy project
         // Its more usefull if you need to calculate a color or if u want a 16 color pallet
@@ -646,4 +650,5 @@ namespace CES {
                     return duration;
                 }
     };
+
 #endif
