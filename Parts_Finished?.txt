@@ -1,0 +1,9 @@
+Parts = Finished? :
+  CELL_SYSTEM = Yes.
+  GRID_SYSTEM = No.
+  COLOR_UNIT  = Yes.
+  AUDIO_UNIT  = No. (but started)
+  GEOMETRY_UNIT = No.
+  ASSET_UNIT = No.
+  INPUT_UNIT = No.
+
