@@ -83,21 +83,28 @@ namespace CES {
     };
 
     struct CES_XY {
-            uint16_t x; // max. 65K Character
-            uint16_t y; // max. 65K Character
-            
-            CES_COLOR ARGB; // Alpha-Red-Green-Blue
+        uint16_t x; // max. 65K Character
+        uint16_t y; // max. 65K Character
+        
+        CES_COLOR ARGB; // Alpha-Red-Green-Blue
 
-            CES_XY() = default;
-            CES_XY(const CES_XY&) = default;
-            CES_XY(CES_XY&&) noexcept = default;
-            CES_XY& operator=(const CES_XY&) = default;
-            CES_XY& operator=(CES_XY&&) noexcept = default;
+        CES_XY() = default;
+        CES_XY(const CES_XY&) = default;
+        CES_XY(CES_XY&&) noexcept = default;
+        CES_XY& operator=(const CES_XY&) = default;
+        CES_XY& operator=(CES_XY&&) noexcept = default;
 
-            bool operator==(const CES_XY& other) const noexcept {
-                return x == other.x && y == other.y;
-            }
-        };
+        bool operator==(const CES_XY& other) const noexcept {
+            return x == other.x && y == other.y;
+        }
+    };
+
+    struct TerminalCapabilities {
+        int supportsColor = 1;
+        bool supportsRGB = false;
+        bool supportsCursor = false;
+        bool supportsMouse = false;
+    };
 }
 
 namespace std {
@@ -110,16 +117,10 @@ namespace std {
         }
     };
 }
+    
 
 namespace CES {
     using namespace std;
-
-    struct TerminalCapabilities {
-        int supportsColor = 1;
-        bool supportsRGB = false;
-        bool supportsCursor = false;
-        bool supportsMouse = false;
-    };
 
     #ifdef CES_CELL_SYSTEM
         class CES_Screen {
@@ -652,3 +653,4 @@ namespace CES {
     };
 
 #endif
+
