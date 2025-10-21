@@ -1,5 +1,5 @@
 Parts = Finished? :
-  CELL_SYSTEM = Yes.
+  CELL_SYSTEM = Yes. (partly)
   GRID_SYSTEM = No.
   COLOR_UNIT  = Yes.
   AUDIO_UNIT  = No. (but started)
