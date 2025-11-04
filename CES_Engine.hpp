@@ -1,26 +1,3 @@
-// The following Code is the complete Engine
-//
-// Credits:
-// - Cedric Schmermund (CEOofeinPlan); cedric.schmermund@gmail.com
-// 
-// If you find any bug or problem in this code, either write me an email, or put it into the issue list on the GitHub Repository.
-//
-// If you have any Ideas for this Engine, which could make it better, please also write me an email.
-//
-// If you a contribution, give ur own code credits and write me an email and make a pull request.
-//
-// ID / Last worked at it / name
-// 1 / 04.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 2 / 05.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 3 / 06.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 4 / 07.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 5 / 14.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 6 / 15.10.2025 / Cedric Schmermund (CEOofeinPlan)
-// 7 / 16.10.2025 / Cedric Schmermund (CEOofeinPlan)
-
-// General planning:
-// First the engine, than the modules
-
 /* @brief The Cell System only stores the character that should be outputed; Its much faster and more flexible; Every Cell is stored in a HashMap.*/
 #include <unordered_map>
 #include <iostream>
@@ -98,13 +75,6 @@ namespace CES {
             return x == other.x && y == other.y;
         }
     };
-
-    struct TerminalCapabilities {
-        int supportsColor = 1;
-        bool supportsRGB = false;
-        bool supportsCursor = false;
-        bool supportsMouse = false;
-    };
 }
 
 namespace std {
@@ -117,10 +87,16 @@ namespace std {
         }
     };
 }
-    
 
 namespace CES {
     using namespace std;
+
+    struct TerminalCapabilities {
+        int supportsColor = 1;
+        bool supportsRGB = false;
+        bool supportsCursor = false;
+        bool supportsMouse = false;
+    };
 
     #ifdef CES_CELL_SYSTEM
         class CES_Screen {
@@ -452,7 +428,7 @@ namespace CES {
             // First if is RED, second is GREEN, third is BLUE
             // It's not the best solution till now, but it makes it easier to read
             // 8 color terminal
-                if (CES_CC_A(red, green, blue, 0,0,0))   color->Convert_HEX_24(CES_16_BLACK);
+                 if (CES_CC_A(red, green, blue, 0,0,0))   color->Convert_HEX_24(CES_16_BLACK);
             else if (CES_CC_A(red, green, blue, 2,0,0))   color->Convert_HEX_24(CES_16_RED);
             else if (CES_CC_A(red, green, blue, 0,2,0))   color->Convert_HEX_24(CES_16_GREEN);
             else if (CES_CC_A(red, green, blue, 2,2,0))   color->Convert_HEX_24(CES_16_YELLOW);
@@ -482,19 +458,22 @@ namespace CES {
     #include <cstdint>
     #include <algorithm>
     #include <thread>
-    #include <atomic>
+    #include <map>
     #include <set>
+    #include <tuple>
+
+    #define MINIAUDIO_IMPLENTATION
+    // miniaudio.h is NOT my file
+    // miniaudio.h is owned by David Reid 
+    // miniaudio.h Repository -> https://github.com/mackron/miniaudio
+    #include "miniaudio.h"
+
+    #pragma comment(lib, "winmm.lib")
 
     using namespace std;
 
     class CES_AUDIO {
         public:
-            enum CES_CUR_AUDIO_STATE {
-                PLAY,
-                PAUSE,
-                LOOP,
-                DELETE_AUDIO
-            };
 
             void initializeSoundCard() {
                 string command;
@@ -532,125 +511,65 @@ namespace CES {
                 #endif
             }
 
-            /*@brief WAV audio files are working on every system, if your file isn't wav it's gonna be automatically converted into one; PUT false INTO THE FIRST PARAMETER TO STOP THIS PROCESS.*/
-            int playAudio(const string& path, bool running, bool convert = true) {
-                if (!convert) return -1;
-                namespace fs = std::filesystem;
-                string wavPath = path;
-                if (!(path.size() > 4 && path.substr(path.size() - 4) == ".wav")) {
-                    return -2;
-                }
-                
-                if (wavPath.empty()) {
-                    return -4;
+            int initSound(string path, bool async = true, bool loop = false) {
+                if (!initialized) {
+                    if (ma_engine_init(NULL, &engine) != MA_SUCCESS) return -1;
+                    initialized = true;
                 }
 
-                #ifdef _WIN32
-                    if (running) {
-                        string cmd = "powershell -c \"(New-Object Media.SoundPlayer '" + fs::absolute(wavPath).string() + "').PlaySync()\"";
-                        system(cmd.c_str());
+                auto sound = new ma_sound;
+                if (ma_sound_init_from_file(&engine, path.c_str(), 0, NULL, NULL, sound) != MA_SUCCESS) {
+                    delete sound;
+                    return -2;
+                }
+
+                holding_sound[path] = sound;
+
+                ma_sound_start(sound);
+
+                if (loop) ma_sound_set_looping(sound, MA_TRUE);
+
+                // Async oder sync
+                if (!loop && !async) {
+                    while (ma_sound_is_playing(sound)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
                     }
-                #elif defined(__linux__)
-                    // Checking for paplay / aplay
-                    if (system("command -v paplay >/dev/null 2>&1") == 0) {
-                        system(("paplay '" + wavPath + "'").c_str());
-                    } else {
-                        system(("aplay '" + wavPath + "'").c_str());
-                    }
-                #elif defined(__APPLE__)
-                    string cmd = "afplay '" + wavPath + "'";
-                    system(cmd.c_str());
-                #else
-                    // Debug Command
-                #endif
+                    ma_sound_uninit(sound);
+                    delete sound;
+                    holding_sound.erase(path);
+                } else if (!loop) {
+                    // async non-loop: Thread cleanup
+                    std::thread([sound, this, path](){
+                        while (ma_sound_is_playing(sound)) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                        }
+                        ma_sound_uninit(sound);
+                        delete sound;
+                        holding_sound.erase(path);
+                    }).detach();
+                }
 
                 return 0;
             }
-            
-            int inputSound(string& PATH, bool loop = false) {
-                if (!(PATH.size() > 4 && PATH.substr(PATH.size() - 4) == ".wav")) {
-                    return -1;
-                }
 
-                auto it = find(path.begin(), path.end(), PATH);
-
-                if (it == path.end()) return -2;
-
-                
-
-                thread sound;
-
-                pair<string, thread::id> tmp;
-
-                tmp.first = PATH;
-                tmp.second = sound.get_id();
-
-                path.insert(tmp);
-
-                pair<thread::id, atomic<CES_CUR_AUDIO_STATE>> tmp1;
-                tmp1.first = sound.get_id();
-                tmp1.second = CES_CUR_AUDIO_STATE::PAUSE;
-                running.insert(tmp1);
-
-                thrs.insert(sound.get_id());
-
-                sound = thread([=]() mutable {
-                    auto it = running.begin();
-                    while (it != running.end()) { if (it->first == this_thread::get_id()) break; else it++;}
-                    if (it != running.end()) {
-                        do {
-                            int elapsed = 0;
-                            while (elapsed < getWavDuration(PATH) && it->second != CES_CUR_AUDIO_STATE::DELETE_AUDIO) {
-                                if (it->second == CES_CUR_AUDIO_STATE::PAUSE) {
-                                    this_thread::sleep_for(chrono::milliseconds(10));
-                                    continue;
-                                }
-
-                                this
-                            }
-                        }
-                    }
-                });
+            int uninitSound(string path) {
+                ma_sound_uninit(holding_sound[path]);
+                free(holding_sound[path]);
+                return 0;
             }
+
+            void PauseResumeSound(string path) {
+                if (ma_sound_is_playing(holding_sound[path])) ma_sound_stop(holding_sound[path]);
+                else ma_sound_start(holding_sound[path]);
+            }
+
+            inline ma_sound* getSoundPTR(string path) { return holding_sound[path]; }
 
             bool hasSoundCard;
             
             private:
-                void runningSound();
-
-                set<pair<string, thread::id>> path;
-                set<thread::id> thrs;
-                set<pair<thread::id, atomic<CES_CUR_AUDIO_STATE>>> running;
-
-                struct WAVHeader {
-                    char riff[4];             // "RIFF"
-                    uint32_t chunkSize;
-                    char wave[4];             // "WAVE"
-                    char fmt[4];              // "fmt "
-                    uint32_t subchunk1Size;   // 16 for PCM
-                    uint16_t audioFormat;     // PCM = 1
-                    uint16_t numChannels;
-                    uint32_t sampleRate;
-                    uint32_t byteRate;
-                    uint16_t blockAlign;
-                    uint16_t bitsPerSample;
-                    char data[4];             // "data"
-                    uint32_t subchunk2Size;   // size of the data section
-                };
-
-                double getWavDuration(const string& filename) {
-                    ifstream file(filename, ios::binary);
-                    if (!file) return 0.0;
-                    WAVHeader header{};
-                    file.read(reinterpret_cast<char*>(&header), sizeof(WAVHeader));
-
-                    if (string(header.riff, 4) != "RIFF" || string(header.wave, 4) != "WAVE") return 0.0;
-
-                    double duration = static_cast<double>(header.subchunk2Size) / (header.sampleRate * header.numChannels * (header.bitsPerSample / 8.0));
-
-                    return duration;
-                }
+                ma_engine engine;
+                bool initialized = false;
+                unordered_map<string, ma_sound*> holding_sound;
     };
-
 #endif
-
