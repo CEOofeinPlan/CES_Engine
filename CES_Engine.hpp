@@ -677,23 +677,20 @@ namespace CES {
                         vector<int16_t> out(N);
 
                         double f = freq;
-                        double amp = 0.6;  // Grundlautstärke
+                        double amp = 0.6;
 
                         for (int i = 0; i < N; i++)
                         {
                             double t = i / (double)SAMPLE_RATE;
 
-                            // Dreieck (warm, weich)
                             double tri = 2.0 * fabs(2.0 * (t*f - floor(t*f + 0.5))) - 1.0;
 
-                            // leises Rechteck (für Obertöne)
                             double sq = (fmod(t*f, 1.0) < 0.5 ? 1.0 : -1.0);
 
                             double value = 
-                                tri * amp +        // Hauptklang
-                                sq * 0.15;         // dezente Obertöne
+                                tri * amp +        
+                                sq * 0.15;         
 
-                            // keine Übersteuerung
                             value = max(-1.0, min(1.0, value));
 
                             out[i] = (int16_t)(value * 32767.0);
@@ -769,7 +766,6 @@ namespace CES {
                                         samples = generateWarmPiano(freq, dur);
                                         applyPianoEnvelope(samples);
 
-                                        // 60% Lautstärke (Anti-Clipping vor dem Mix)
                                         for (auto& s : samples)
                                             s = static_cast<int16_t>(s * 0.6f);
 
@@ -779,48 +775,34 @@ namespace CES {
                                         break;
                                 }
 
-                                // falls du eine zweite Hüllkurve willst:
-                                // applyPianoADSR(samples);
-
                                 layer.push_back(move(samples));
                             }
 
-                            // Länge des längsten Layers
                             size_t len = 0;
                             for (auto& v : layer)
                                 len = max(len, v.size());
 
                             vector<float> mixFloat(len, 0.0f);
 
-                            // Stimmen addieren
                             for (auto& v : layer) {
                                 for (size_t i = 0; i < v.size(); ++i) {
                                     mixFloat[i] += v[i];
                                 }
                             }
 
-                            //
-                            // ⭐ ANTI-CLIPPING LÖSUNG #1: Peak Normalisierung
-                            //
-
-                            // Peak finden
                             float peak = 0.0f;
                             for (size_t i = 0; i < len; ++i)
                                 peak = max(peak, fabs(mixFloat[i]));
 
-                            // Falls keinen Klang vorhanden
                             if (peak < 1.0f) peak = 1.0f;
 
-                            // Skalierungsfaktor
                             float scale = 32767.0f / peak;
 
-                            // Mischung in int16 konvertieren
                             vector<int16_t> mix(len);
                             for (size_t i = 0; i < len; ++i) {
                                 mix[i] = static_cast<int16_t>(mixFloat[i] * scale);
                             }
 
-                            // 10ms Stille einfügen
                             vector<int16_t> silence(SAMPLE_RATE / 100, 0);
                             final.insert(final.end(), silence.begin(), silence.end());
                             final.insert(final.end(), mix.begin(), mix.end());
@@ -835,4 +817,5 @@ namespace CES {
                 bool initialized = false;
                 unordered_map<string, ma_sound*> holding_sound;
     };
+
 #endif
