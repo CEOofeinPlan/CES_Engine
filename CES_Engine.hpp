@@ -471,45 +471,56 @@ namespace CES {
     #pragma comment(lib, "winmm.lib")
 
     using namespace std;
+        // MIDI Numbers
+        enum CES_NOTE {
+            C_1 = 0,  C_1R = 1,  DB_1 = 1,  D_1 = 2,  D_1R = 3,  EB_1 = 3,  E_1 = 4,
+            F_1 = 5,  F_1R = 6,  GB_1 = 6,  G_1 = 7,  G_1R = 8,  AB_1 = 8,  A_1 = 9,
+            A_1R = 10, BB_1 = 10, B_1 = 11,
+
+            C0 = 12, C0R = 13, DB0 = 13, D0 = 14, D0R = 15, EB0 = 15, E0 = 16,
+            F0 = 17, F0R = 18, GB0 = 18, G0 = 19, G0R = 20, AB0 = 20, A0 = 21,
+            A0R = 22, BB0 = 22, B0 = 23,
+
+            C1 = 24, C1R = 25, DB1 = 25, D1 = 26, D1R = 27, EB1 = 27, E1 = 28,
+            F1 = 29, F1R = 30, GB1 = 30, G1 = 31, G1R = 32, AB1 = 32, A1 = 33,
+            A1R = 34, BB1 = 34, B1 = 35,
+
+            C2 = 36, C2R = 37, DB2 = 37, D2 = 38, D2R = 39, EB2 = 39, E2 = 40,
+            F2 = 41, F2R = 42, GB2 = 42, G2 = 43, G2R = 44, AB2 = 44, A2 = 45,
+            A2R = 46, BB2 = 46, B2 = 47,
+
+            C3 = 48, C3R = 49, DB3 = 49, D3 = 50, D3R = 51, EB3 = 51, E3 = 52,
+            F3 = 53, F3R = 54, GB3 = 54, G3 = 55, G3R = 56, AB3 = 56, A3 = 57,
+            A3R = 58, BB3 = 58, B3 = 59,
+
+            C4 = 60, C4R = 61, DB4 = 61, D4 = 62, D4R = 63, EB4 = 63, E4 = 64,
+            F4 = 65, F4R = 66, GB4 = 66, G4 = 67, G4R = 68, AB4 = 68, A4 = 69,
+            A4R = 70, BB4 = 70, B4 = 71,
+
+            C5 = 72, C5R = 73, DB5 = 73, D5 = 74, D5R = 75, EB5 = 75, E5 = 76,
+            F5 = 77, F5R = 78, GB5 = 78, G5 = 79, G5R = 80, AB5 = 80, A5 = 81,
+            A5R = 82, BB5 = 82, B5 = 83,
+
+            C6 = 84, C6R = 85, DB6 = 85, D6 = 86, D6R = 87, EB6 = 87, E6 = 88,
+            F6 = 89, F6R = 90, GB6 = 90, G6 = 91, G6R = 92, AB6 = 92, A6 = 93,
+            A6R = 94, BB6 = 94, B6 = 95,
+
+            C7 = 96, C7R = 97, DB7 = 97, D7 = 98, D7R = 99, EB7 = 99, E7 = 100,
+            F7 = 101, F7R = 102, GB7 = 102, G7 = 103, G7R = 104, AB7 = 104, A7 = 105,
+            A7R = 106, BB7 = 106, B7 = 107,
+
+            C8 = 108, C8R = 109, DB8 = 109, D8 = 110, D8R = 111, EB8 = 111, E8 = 112,
+            F8 = 113, F8R = 114, GB8 = 114, G8 = 115, G8R = 116, AB8 = 116, A8 = 117,
+            A8R = 118, BB8 = 118, B8 = 119,
+
+            C9 = 120, C9R = 121, DB9 = 121, D9 = 122, D9R = 123, EB9 = 123, E9 = 124,
+            F9 = 125, F9R = 126, GB9 = 126, G9 = 127
+        };
 
     class CES_AUDIO {
         public:
 
-            void initializeSoundCard() {
-                string command;
-                #if defined(_WIN32)
-                    command = "wmic sounddev get name";
-                #elif defined(__linux__)
-                    command = "cat /proc/asound/cards";
-                #elif defined(__APPLE__)
-                    command = "system_profiler SPAudioDataType";
-                #else 
-                    // Even if there is an soundcard, you couldn't play anything
-                    hasSoundCard = false;
-                    return;
-                #endif
-
-                FILE* pipe = popen(command.c_str(), "r");
-                if (!pipe) {
-                    hasSoundCard = false;
-                    return;
-                }
-
-                char buffer[256];
-                string out;
-                while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                    out += buffer;
-                }
-                pclose(pipe);
-
-                #if defined(_WIN32) 
-                    hasSoundCard = out.find("Name") != string::npos;
-                #elif defined(__linux__)
-                    hasSoundCard = out.find("0 [") != string::npos;
-                #elif defined(__APPLE__)
-                    hasSoundCard = out.find("Output") != string::npos;
-                #endif
-            }
+            // Normal sound input through a .wav file
 
             int initSound(string path, bool async = true, bool loop = false) {
                 if (!initialized) {
@@ -565,7 +576,259 @@ namespace CES {
 
             inline ma_sound* getSoundPTR(string path) { return holding_sound[path]; }
 
-            bool hasSoundCard;
+            // Sound input through your own sheet of music
+
+            class CES_Componist {
+                public:
+                    struct Note {
+                        double frequency; // (Hz)
+                        double duration;  // (s)
+                        double amplitude; // 0.0 -> 1.0
+                    };
+
+                    double convertFrequency(int n) { return 440.0 * pow(2.0, (n-69.0) / 12.0); }
+
+                    // f = 100% Klang
+                    // p = 075% Klang
+                    // . = 050% Klang
+                    // - = 025% Klang
+
+                    enum CES_INSTRUMENTAL_TYPE {
+                        piano
+                    };
+
+                    int convertSound(vector<pair<CES_NOTE, string>>& music, CES_INSTRUMENTAL_TYPE options, string title, bool replace = false) {
+                        title += ".wav";
+                        if (!filesystem::exists(title) || replace) {
+                            switch (options) {
+                                case CES_INSTRUMENTAL_TYPE::piano:
+                                    // unordered_map<idx, vector<pair<MIDI, Sound>>>
+                                    unordered_map<int, vector<pair<int, char>>> componistList;
+                                    for (auto& i : music) {
+                                        // Valid
+                                        cout << i.first << endl;
+                                        if (i.first > -1 && i.first < 127) {
+                                            int MIDI = i.first;
+                                            for (int j = 0; j < i.second.length(); ++j) {
+                                                pair<int, char> tmp = {MIDI, i.second[j]};
+                                                componistList[j].push_back(tmp);
+                                            }
+                                        } else continue;
+                                    }
+                                    cout << componistList.empty() << endl;
+                                    auto samples = buildSound(componistList, CES_INSTRUMENTAL_TYPE::piano);
+                                    samples = applyFade(samples);
+                                    saveWAV(title, samples);
+                                break;
+
+                            };
+                        }
+
+                        return 0;
+                    }
+                private:
+                    unordered_map<int, vector<uint16_t>> tnMap;
+                    const int SAMPLE_RATE = 44100;
+                    const double PI = 3.14159265358979323846;
+
+                    void applyPianoADSR(vector<int16_t>& s) {
+                        int n = s.size();
+                        int attack = 0.005 * SAMPLE_RATE;
+                        int decay  = 0.15  * SAMPLE_RATE;
+                        for (int i = 0; i < n; ++i) {
+                            double amp = 1.0;
+                            if (i < attack) amp = i / (double)attack;
+                            else if (i < decay) {
+                                amp = 1.0 - 0.85 * ((i-attack) / (double)(decay-attack));
+                            }
+
+                            s[i] = static_cast<int16_t>(s[i]*amp);
+                        }
+                    }
+
+                    void applyPianoEnvelope(vector<int16_t>& s)
+                    {
+                        int N = s.size();
+
+                        int attack = SAMPLE_RATE * 0.004; // 4ms
+                        int decay  = SAMPLE_RATE * 0.35;  // 350ms
+
+                        for (int i = 0; i < N; i++)
+                        {
+                            double env;
+
+                            if (i < attack)
+                                env = (double)i / attack;  // Linear Attack
+                            else if (i < decay)
+                            {
+                                double x = (i - attack) / (double)(decay - attack);
+                                env = 1.0 * pow(1.0 - x, 1.8); 
+                            }
+                            else
+                                env = 0.0; 
+
+                            s[i] = (int16_t)(s[i] * env); 
+                        }
+                    }
+
+                    vector<int16_t> generateWarmPiano(double freq, double duration = 0.25)
+                    {
+                        int N = SAMPLE_RATE * duration;
+                        vector<int16_t> out(N);
+
+                        double f = freq;
+                        double amp = 0.6;  // Grundlautstärke
+
+                        for (int i = 0; i < N; i++)
+                        {
+                            double t = i / (double)SAMPLE_RATE;
+
+                            // Dreieck (warm, weich)
+                            double tri = 2.0 * fabs(2.0 * (t*f - floor(t*f + 0.5))) - 1.0;
+
+                            // leises Rechteck (für Obertöne)
+                            double sq = (fmod(t*f, 1.0) < 0.5 ? 1.0 : -1.0);
+
+                            double value = 
+                                tri * amp +        // Hauptklang
+                                sq * 0.15;         // dezente Obertöne
+
+                            // keine Übersteuerung
+                            value = max(-1.0, min(1.0, value));
+
+                            out[i] = (int16_t)(value * 32767.0);
+                        }
+
+                        return out;
+                    }
+
+                    vector<int16_t> applyFade(const vector<int16_t>& samples, double fadeDuration = 0.01) {
+                        int fadeSample = static_cast<int>(samples.size() * fadeDuration);
+                        vector<int16_t> out = samples;
+                        for (int i = 0; i < fadeSample; ++i) {
+                            double factor = i / static_cast<double>(fadeSample);
+                            out[i] = static_cast<int16_t>(out[i] * factor);
+                            out[samples.size()-i-1] = static_cast<int16_t>(out[samples.size()-i-1] * factor);
+                        }
+                        return out;
+                    }
+
+                    void saveWAV(string& title, const vector<int16_t>& samples) {
+                        ofstream file(title, ios::binary);
+                        file.write("RIFF", 4);
+                        uint32_t fileSize = 36 + samples.size() * sizeof(int16_t);
+                        file.write(reinterpret_cast<char*>(&fileSize), 4);
+                        file.write("WAVE", 4);
+
+                        file.write("fmt ", 4);
+                        uint32_t subChunk1Size = 16;
+                        file.write(reinterpret_cast<char*>(&subChunk1Size), 4);
+                        uint16_t audioFormat = 1;
+                        file.write(reinterpret_cast<char*>(&audioFormat), 2);
+                        uint16_t numChannels = 1;
+                        file.write(reinterpret_cast<char*>(&numChannels), 2);
+                        uint32_t sampleRate = SAMPLE_RATE;
+                        file.write(reinterpret_cast<char*>(&sampleRate), 4);
+                        uint32_t byteRate = SAMPLE_RATE * numChannels * sizeof(int16_t);
+                        file.write(reinterpret_cast<char*>(&byteRate), 4);
+                        uint16_t blockAlign = numChannels * sizeof(int16_t);
+                        file.write(reinterpret_cast<char*>(&blockAlign), 2);
+                        uint16_t bitsPerSample = 16;
+                        file.write(reinterpret_cast<char*>(&bitsPerSample), 2);
+
+                        file.write("data", 4);
+                        uint32_t subChunk2Size = samples.size() * sizeof(int16_t);
+                        file.write(reinterpret_cast<char*>(&subChunk2Size), 4);
+                        file.write(reinterpret_cast<const char*>(samples.data()), subChunk2Size);
+                    }
+
+                    vector<int16_t> buildSound(const unordered_map<int, vector<pair<int, char>>>& song,
+                           CES_INSTRUMENTAL_TYPE type, double base = 0.25)
+                    {
+                        vector<int16_t> final;
+
+                        for (const auto& [index, notes] : song) {
+                            vector<vector<int16_t>> layer;
+
+                            for (const auto& [midi, sym] : notes) {
+                                double freq = convertFrequency(midi);
+                                double dur = base;
+
+                                switch (sym) {
+                                    case '.': dur *= 0.5; break;
+                                    case '-': dur *= 2.0; break;
+                                    case 'p': dur = 0.5; break;
+                                    case 'f': dur = 1.2; break;
+                                    default: break;
+                                }
+
+                                vector<int16_t> samples;
+
+                                switch (type) {
+                                    case CES_INSTRUMENTAL_TYPE::piano:
+                                        samples = generateWarmPiano(freq, dur);
+                                        applyPianoEnvelope(samples);
+
+                                        // 60% Lautstärke (Anti-Clipping vor dem Mix)
+                                        for (auto& s : samples)
+                                            s = static_cast<int16_t>(s * 0.6f);
+
+                                        break;
+
+                                    default:
+                                        break;
+                                }
+
+                                // falls du eine zweite Hüllkurve willst:
+                                // applyPianoADSR(samples);
+
+                                layer.push_back(move(samples));
+                            }
+
+                            // Länge des längsten Layers
+                            size_t len = 0;
+                            for (auto& v : layer)
+                                len = max(len, v.size());
+
+                            vector<float> mixFloat(len, 0.0f);
+
+                            // Stimmen addieren
+                            for (auto& v : layer) {
+                                for (size_t i = 0; i < v.size(); ++i) {
+                                    mixFloat[i] += v[i];
+                                }
+                            }
+
+                            //
+                            // ⭐ ANTI-CLIPPING LÖSUNG #1: Peak Normalisierung
+                            //
+
+                            // Peak finden
+                            float peak = 0.0f;
+                            for (size_t i = 0; i < len; ++i)
+                                peak = max(peak, fabs(mixFloat[i]));
+
+                            // Falls keinen Klang vorhanden
+                            if (peak < 1.0f) peak = 1.0f;
+
+                            // Skalierungsfaktor
+                            float scale = 32767.0f / peak;
+
+                            // Mischung in int16 konvertieren
+                            vector<int16_t> mix(len);
+                            for (size_t i = 0; i < len; ++i) {
+                                mix[i] = static_cast<int16_t>(mixFloat[i] * scale);
+                            }
+
+                            // 10ms Stille einfügen
+                            vector<int16_t> silence(SAMPLE_RATE / 100, 0);
+                            final.insert(final.end(), silence.begin(), silence.end());
+                            final.insert(final.end(), mix.begin(), mix.end());
+                        }
+
+                        return final;
+                    }
+            };
             
             private:
                 ma_engine engine;
