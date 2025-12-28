@@ -1,6 +1,6 @@
 /* @brief The Cell System only stores the character that should be outputed; Its much faster and more flexible; Every Cell is stored in a HashMap.*/
     #include <unordered_map>
-    #include <iostream>
+    #include <unistd.h>
     #include <cmath>
     #include <cstdint>
     #include <cstdlib>
@@ -10,6 +10,17 @@
     #include <stack>
     #include <string>
     #include <unordered_set>
+    #include <algorithm>
+    #include <set>
+    #include <thread>
+    #include <mutex>
+    #include <atomic>
+    #include <condition_variable>
+    #include <queue>
+    #include <variant>
+    #include <fstream>
+    #include <iostream>
+
 
     #if defined(_WIN32)
         #include <windows.h>
@@ -29,10 +40,10 @@ class CES {
 
         // Everything is based on those three structures; Every type of systems you are choosing is based on it.
         struct CES_COLOR {
-            uint8_t r = 0; // red
-            uint8_t g = 0; // green
-            uint8_t b = 0; // blue
-            uint8_t a = 0; // alpha
+            uint16_t r = 0; // red
+            uint16_t g = 0; // green
+            uint16_t b = 0; // blue
+            uint16_t a = 0; // alpha
 
             CES_COLOR(uint8_t red = 0, uint8_t green = 0, uint8_t blue = 0, uint8_t alpha = 255) {
                 r = red;
@@ -41,27 +52,17 @@ class CES {
                 a = alpha;
             }
 
-            explicit CES_COLOR(uint32_t color) {
-                r = (color >> 24) & 0xFF;   // Extracting red
-                g = (color >> 16) & 0xFF;   // Extracting green
-                b = (color >> 8) & 0xFF;    // Extracting blue
-                a = color & 0xFF;           // Extracting alpha
+            uint32_t to_uint() const noexcept {
+                return (uint32_t(r) << 24) |
+                    (uint32_t(g) << 16) |
+                    (uint32_t(b) << 8 ) |
+                    uint32_t(a);
             }
 
-            /* @brief With Alpha */
-            void Convert_HEX_32(uint32_t color) {
-                r = (color >> 24) & 0xFF;   // Extracting red
-                g = (color >> 16) & 0xFF;   // Extracting green
-                b = (color >> 8) & 0xFF;    // Extracting blue
-                a = color & 0xFF;           // Extracting alpha
-            }
-
-            /* @brief Without Alpha */
-            void Convert_HEX_24(uint32_t color) {
-                if (color > 0xFFFFFF) color = color & 0xFFFFFF; // Getting the Alpha out
-                r = (color >> 16) & 0xFF;   // Extracting red
-                g = (color >> 8) & 0xFF;    // Extracting green
-                b = color & 0xFF;           // Extracting blue
+            inline void Convert_Without_Alpha(int color) noexcept {
+                r = color << 24;
+                g = color << 16;
+                b = color << 8;
             }
 
             bool operator==(const CES_COLOR& c) const noexcept {
@@ -88,78 +89,118 @@ class CES {
         };
 
         struct CES_XY {
-            uint16_t x; // max. 65K Character
-            uint16_t y; // max. 65K Character
+            int x; // max. 65K Character
+            int y; // max. 65K Character
+            int z;      // Enough layers 
             
             CES_COLOR ARGB; // Alpha-Red-Green-Blue
 
             char32_t c; // UniCode Character
 
             CES_XY() = default;
-            CES_XY(const CES_XY&) = default;
+            CES_XY(int X, int Y) : x(X), y(Y) {}
+            CES_XY(int X, int Y, int Z) : x(X), y(Y), z(Z) {};
+            CES_XY(const CES_XY& o) {
+                x = o.x;
+                y = o.y;
+                z = o.z;
+                ARGB = o.ARGB;
+                c = o.c;
+            };
+            CES_XY(int X, int Y, int Z, CES_COLOR color, char32_t C) : x(X), y(Y), z(Z), ARGB(color), c(C) {};
             CES_XY(CES_XY&&) noexcept = default;
             CES_XY& operator=(const CES_XY&) = default;
             CES_XY& operator=(CES_XY&&) noexcept = default;
 
             bool operator==(const CES_XY& other) const noexcept {
                 return x == other.x
-                    && y == other.y
-                    && ARGB == other.ARGB
-                    && c == other.c;
+                    && y == other.y;
+            }
+
+            bool fullEquals(const CES_XY& other) const noexcept {
+                return x == other.x && y == other.y
+                    && ARGB == other.ARGB && c == other.c && z == other.z;
             }
 
             struct CES_XY_Hash {
-                size_t operator()(const CES_XY& xy) const noexcept {
-                    size_t h1 = hash<uint16_t>()(xy.x);
-                    size_t h2 = hash<uint16_t>()(xy.y);
+                size_t operator()(const CES_XY& v) const noexcept {
+                    size_t h = 0;
 
-                    uint32_t packed =
-                        (xy.ARGB.r << 24) |
-                        (xy.ARGB.g << 16) |
-                        (xy.ARGB.b <<  8) |
-                        (xy.ARGB.a);
+                    auto mix = [&h](size_t x) {
+                        h ^= x + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+                    };
 
-                    size_t h3 = hash<uint32_t>()(packed);
-                    size_t h4 = hash<char32_t>()(xy.c);
+                    mix(static_cast<size_t>(v.x));
+                    mix(static_cast<size_t>(v.y));
+                    mix(static_cast<size_t>(v.z));
+                    mix(static_cast<size_t>(v.ARGB.to_uint()));
+                    mix(static_cast<size_t>(v.c));
 
-                    return ((h1 ^ (h2 << 1)) ^ (h3 << 1)) ^ (h4 << 1);
+                    return h;
+                }
+            };
+
+            struct PairHash {
+                size_t operator()(const pair<int, int>& p) const noexcept {
+                    return (static_cast<size_t>(p.first) << 16) | p.second;
+                }
+            };
+
+            struct VecHash {
+                size_t operator()(const vector<CES_XY>& v) const noexcept {
+                    size_t h = 0;
+                    CES_XY_Hash hasher;
+
+                    for (const auto& p : v) {
+                        h ^= hasher(p)
+                        + 0x9e3779b97f4a7c15ULL
+                        + (h << 6)
+                        + (h >> 2);
+                    }
+                    return h;
+                }
+            };
+
+            struct VecPtrHash
+            {
+                size_t operator()(const vector<CES::CES_XY>* v) const noexcept
+                {
+                    return hash<const void*>{}(v);
                 }
             };
 
 
-            string convertCHAR32toCHAR(char32_t c) const {
-                string utf8;
+
+            string convertCHAR32toCHAR(char32_t c) const
+            {
+                string out;
+
                 if (c <= 0x7F) {
-                    utf8 += static_cast<char>(c);
-                } else if (c <= 0x7FF) {
-                    utf8 += static_cast<char>(0xC0 | ((c >> 6) & 0x1F));
-                    utf8 += static_cast<char>(0x80 | (c & 0x3F));
-                } else if (c <= 0xFFFF) {
-                    utf8 += static_cast<char>(0xE0 | ((c >> 12) & 0x0F));
-                    utf8 += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-                    utf8 += static_cast<char>(0x80 | (c & 0x3F));
-                } else {
-                    utf8 += static_cast<char>(0xF0 | ((c >> 18) & 0x07));
-                    utf8 += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
-                    utf8 += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-                    utf8 += static_cast<char>(0x80 | (c & 0x3F));
+                    out.push_back(static_cast<char>(c));
+                }
+                else if (c <= 0x7FF) {
+                    out.push_back(static_cast<char>(0xC0 | ((c >> 6) & 0x1F)));
+                    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+                }
+                else if (c <= 0xFFFF) {
+                    out.push_back(static_cast<char>(0xE0 | ((c >> 12) & 0x0F)));
+                    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+                    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+                }
+                else if (c <= 0x10FFFF) {
+                    out.push_back(static_cast<char>(0xF0 | ((c >> 18) & 0x07)));
+                    out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
+                    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+                    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+                }
+                else {
+                    out = "\xEF\xBF\xBD";
                 }
 
-                return utf8;
+                return out;
             }
+
         };
-
-        template<typename HashA, typename EqA, typename HashB, typename EqB>
-        static bool sets_equal(const unordered_set<CES_XY, HashA, EqA>& a, const unordered_set<CES_XY, HashB, EqB>& b)
-        {
-            if (a.size() != b.size()) return false;
-
-            for (const auto& e : a) {
-                if (b.find(e) == b.end()) return false;
-            }
-
-            return true;
-        }
 
         struct TerminalCapabilities {
             int supportsColor = 1;
@@ -213,10 +254,15 @@ class CES {
                         
                         // Windows:
                         // First decide if the current windows is older than windows 10
-                        // ! --> If you compile your project make sure it is compiled "static"; People who wants to use your project or play your game needs the file: "windows.h"; If the "static" attribute, in your compile command is set, then no issue won't appear in this context.
+                        // ! --> If you compile your project make sure it is compiled "static"; People who wants to use your project or play your game needs the file: "windows.h"; If the "static" attribute, in your compile command is set, then no issue will appear in this context.
 
+                        ClearConsole();
+                        // I/O without comparing to C
+                        ios::sync_with_stdio(false);
+                        cin.tie(nullptr);
                         #if defined(_WIN32)
                         #define WIN32_LEAN_AND_MEAN
+                            SetConsoleCP(CP_UTF8);
                             bool initialized = true;
                             HKEY hKey;
                             DWORD major = 0, minor = 0, build = 0;
@@ -346,52 +392,332 @@ class CES {
                     ~CES_Screen() {
                         // Moving out from this specific terminal setting
                         cout << "\033[?1049l";
+                        ClearConsole();
+                        cout << "\033[1;1H";
                     }
 
-                    // Only assigning
-                    void WriteCell(char32_t c, uint16_t x, uint16_t y, CES_COLOR color) {
-                        CES_XY p1;
-                        p1.x = x;
-                        p1.y = y;
-                        p1.ARGB = color;
-                        p1.c = c;
-                        Cell_Storages[{p1.x, p1.y}] = p1;
-                        Cell_Changed[{p1.x, p1.y}] = true;
-                    }
-
-                    // Only assigning
-                    void pack_load_geometry(vector<CES_XY>* xy) {
-                        for (auto& i : *xy) {
-                            if (Cell_Storages[{i.x, i.y}] == i) continue;
-                            Cell_Storages[{i.x, i.y}] = i;
-                            Cell_Changed[{i.x, i.y}] = true;
-                        }
-                    }
-
-                    // Alpha is left.
                     void OutputCurWindow() {
-                        for (auto& i : Cell_Changed) { // Big O(N)
-                            // Dirty-Region-Rendering
-                            if (i.second) {
-                                // Big O(logN)
-                                // first.second = y; first.first = x;
-                                CES_XY a = Cell_Storages[{i.first.first, i.first.second}];
-                                cout << "\033[" << a.y << ";" << a.x << "H";   // Move cursor to the new position
-                                cout    << "\033[38;2;"                        
-                                        << static_cast<int>(a.ARGB.r) << ";"   //
-                                        << static_cast<int>(a.ARGB.g) << ";"   // Place the new character
-                                        << static_cast<int>(a.ARGB.b) << "m"   //
-                                        << a.convertCHAR32toCHAR(a.c) << "\033[0m";
-                                cout << "\033[?25l";                           // Hide cursor
+                        sort(change.begin(), change.end(), [](const CES::CES_XY& a, const CES::CES_XY& b) {
+                            return a.z < b.z;
+                        });
+
+                        auto main = &change;
+                        auto erase = &remove;
+                        auto cur = &frame;
+                        auto mtx = &mtx_write;
+                        pair<int, int> size = WidthHeight();
+
+                        ThreadPool pool(4);
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_0;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_1;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_2;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_3;
+
+                        // ! Tiles are numbered clockwise. (Thread 0: left-top, thread 1: right-top, thread 2: right-bottom, thread 3: left-bottom)
+                        atomic<int> remaining = 4;
+                        // Thread 0
+                        pool.enqueue([&main, &size, &thread_0, &remaining, &cur, &erase, &mtx]() {
+                            int x = size.first;
+                            int y = size.second;
+                            int x_start = 0;
+                            int y_start = 0;
+                            int x_end = x / 2;
+                            int y_end = y / 2;
+
+                            for (auto& [p, c] : *erase) {
+                                x = c.x;
+                                y = c.y;
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                unique_lock<mutex> lock(*mtx);
+                                cur->erase({x,y});
+                                lock.unlock();
+                                // INT_MIN so the next for loop can overwrite it.
+                                CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
+                                thread_0[{x,y}] = xy;
                             }
+
+                            for (CES::CES_XY& c : *main) {
+                                x = c.x;
+                                y = c.y;
+                                // If the current cell is in the thread area, if not CONTINUE.
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                if (cur->count({x,y})) {
+                                    auto it = cur->find({x,y});
+                                    if (it->second.z >= c.z) continue;
+                                }
+                                // Due to this operation: "==" only x and y will be compared, nothing more.
+                                // If the cell does not exist; It will be inserted.
+                                thread_0[{x,y}] = c;
+                            }
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 1
+                        pool.enqueue([&main, &size, &thread_1, &remaining, &cur, &erase, &mtx]() {
+                            int x = size.first;
+                            int y = size.second;
+                            int x_start = x/2;
+                            int y_start = 0;
+                            int x_end = x;
+                            int y_end = y/2;
+
+                            for (auto& [p, c] : *erase) {
+                                x = c.x;
+                                y = c.y;
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                unique_lock<mutex> lock(*mtx);
+                                cur->erase({x,y});
+                                lock.unlock();
+                                // INT_MIN so the next for loop can overwrite it.
+                                CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
+                                thread_1[{x,y}] = xy;
+                            }
+
+                            for (CES::CES_XY& c : *main) {
+                                x = c.x;
+                                y = c.y;
+                                // If the current cell is in the thread area, if not CONTINUE.
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                if (cur->count({x,y})) {
+                                    auto it = cur->find({x,y});
+                                    if (it->second.z >= c.z) continue;
+                                }
+                                // Due to this operation: "==" only x and y will be compared, nothing more.
+                                // If the cell does not exist; It will be inserted.
+                                thread_1[{x,y}] = c;
+                            }
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 2
+                        pool.enqueue([&main, &size, &thread_2, &remaining, &cur, &erase, &mtx]() {
+                            int x = size.first;
+                            int y = size.second;
+                            int x_start = x/2;
+                            int y_start = y/2;
+                            int x_end = x;
+                            int y_end = y;
+
+                            for (auto& [p, c] : *erase) {
+                                x = c.x;
+                                y = c.y;
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                unique_lock<mutex> lock(*mtx);
+                                cur->erase({x,y});
+                                lock.unlock();
+                                // INT_MIN so the next for loop can overwrite it.
+                                CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
+                                thread_2[{x,y}] = c;
+                            }
+
+                            for (CES::CES_XY& c : *main) {
+                                x = c.x;
+                                y = c.y;
+                                // If the current cell is in the thread area, if not CONTINUE.
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                if (cur->count({x,y})) {
+                                    auto it = cur->find({x,y});
+                                    if (it->second.z >= c.z) continue;
+                                }
+                                // Due to this operation: "==" only x and y will be compared, nothing more.
+                                // If the cell does not exist; It will be inserted.
+                                thread_2[{x,y}] = c;
+                            }
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 3
+                        pool.enqueue([&main, &size, &thread_3, &remaining, &cur, &erase, &mtx]() {
+                            int x = size.first;
+                            int y = size.second;
+                            int x_start = 0;
+                            int y_start = y/2;
+                            int x_end = x/2;
+                            int y_end = y;
+
+                            for (auto& [p, c] : *erase) {
+                                x = c.x;
+                                y = c.y;
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                unique_lock<mutex> lock(*mtx);
+                                cur->erase({x,y});
+                                lock.unlock();
+                                // INT_MIN so the next for loop can overwrite it.
+                                CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
+                                thread_3[{x,y}] = c;
+                            }
+
+                            for (CES::CES_XY& c : *main) {
+                                x = c.x;
+                                y = c.y;
+                                // If the current cell is in the thread area, if not CONTINUE.
+                                if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
+                                if (cur->count({x,y})) {
+                                    auto it = cur->find({x,y});
+                                    if (it->second.z >= c.z) continue;
+                                }
+                                // Due to this operation: "==" only x and y will be compared, nothing more.
+                                // If the cell does not exist; It will be inserted.
+                                thread_3[{x,y}] = c;
+                            }
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        while (remaining.load(memory_order_acquire) > 0) {
+                            this_thread::yield();
                         }
-                        //
-                        // => O(N) (overlapped) O(logN) ==> O(N (overlapped) logN) ===> O(N) <-- Better than asymptotic is not possible currently.
-                        //
+                        string everything = "";
+                        for (auto& c : thread_3) {
+                            everything += c.second.convertCHAR32toCHAR(c.second.c);
+                            everything += " ";
+                        }
+
+                        ofstream("Debug.txt") << everything << endl;
+
+
+                        string framebuffer;
+
+                        // Thread 0
+                        for (auto& [p, c] : thread_0) {
+                            framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                            framebuffer += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                            framebuffer += c.convertCHAR32toCHAR(c.c);
+                            framebuffer += "\033[0m";
+                            //if (c.x == 15 && c.y == 11 && c.c == ' ') ofstream("Debug.txt") << "true" << endl;
+                        }
+
+                        // Thread 1
+                        for (auto& [p, c] : thread_1) {
+                            framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                            framebuffer += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                            framebuffer += c.convertCHAR32toCHAR(c.c);
+                            framebuffer += "\033[0m";
+                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
+                        }
+
+                        // Thread 2
+                        for (auto& [p, c] : thread_2) {
+                            framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                            framebuffer += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                            framebuffer += c.convertCHAR32toCHAR(c.c);
+                            framebuffer += "\033[0m";
+                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
+                        }
+
+                        // Thread 3
+                        for (auto& [p, c] : thread_3) {
+                            framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                            framebuffer += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                            framebuffer += c.convertCHAR32toCHAR(c.c);
+                            framebuffer += "\033[0m";
+                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
+                        }
+
+                        // Hide Cursor
+                        framebuffer += "\033[?25l";
+                        #if defined(_WIN32)
+                            DWORD written;
+                            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE),
+                                    framebuffer.data(),
+                                    (DWORD)framebuffer.size(),
+                                    &written,
+                                    nullptr);
+                        #else
+                            write(STDOUT_FILENO, framebuffer.data(), framebuffer.size());
+                        #endif
+
+                        // ! Needs to be cleared.
+                        change.clear();
+                        frame.insert(thread_0.begin(), thread_0.end());
+                        frame.insert(thread_1.begin(), thread_1.end());
+                        frame.insert(thread_2.begin(), thread_2.end());
+                        frame.insert(thread_3.begin(), thread_3.end());
+                    }
+
+                    void OutputCurWindowAlias() {
+
+                    }
+
+                    inline void writeCell(CES::CES_XY& xy) {
+                        change.push_back(xy);
+                    }
+
+                    void writeCell(int x, int y, int z, CES::CES_COLOR color, char32_t c) {
+                        CES::CES_XY xy;
+                        xy.x = x;
+                        xy.y = y;
+                        xy.z = z;
+                        xy.c = c;
+                        xy.ARGB = color;
+                        change.push_back(xy);
+                    }
+
+                    inline void writeCell(vector<CES::CES_XY>* xy) {
+                        for (auto& c : *xy) {
+                            change.push_back(c);
+                        }
+                    }
+
+                    void removeCell(int x, int y) {
+                        CES::CES_XY xy;
+                        xy.x = x;
+                        xy.y = y;
+                        xy.z = INT_MIN;
+                        xy.c = ' ';
+                        xy.ARGB = CES::CES_COLOR(0,0,0);
+                        remove[{xy.x,xy.y}] = xy;
+                    }
+
+                    void removeCell(CES::CES_XY& xy) {
+                        xy.ARGB = CES_COLOR(0,0,0);
+                        xy.c = ' ';
+                        xy.z = INT_MIN;
+                        remove[{xy.x,xy.y}] = xy;
+                    }
+
+                    void removeCell(vector<CES::CES_XY>* xy) {
+                        for (auto& c : *xy) {
+                            c.ARGB = CES_COLOR(0,0,0);
+                            c.z = INT_MIN;
+                            c.c = ' ';
+                            remove[{c.x, c.y}] = c;
+                        }
+                    }
+
+                    pair<int, int> WidthHeight() {
+                        int cols = 0, rows = 0;
+                        #if defined(__WIN32)
+                            CONSOLE_SCREEN_BUFFER_INFO csbi;
+                            if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+                                cols = csbi.srWindow.Right - csbi.srWindow.Left+1;
+                                rows = csbi.srWindow.Bottom - csbi.srWindow.Top+1;
+                            }
+                        #else
+                            struct winsize w;
+                            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
+                                cols = w.ws_col;
+                                rows = w.ws_row;
+                            }
+                        #endif
+
+                        return {cols, rows};
                     }
 
                     void ClearConsole() {
                         cout << "\033[2J";      // Delete the screen
+                        cout << "\033[1;1H";
                         cout << "\033[?25l";    // Hide cursor
                     }
                     
@@ -402,10 +728,32 @@ class CES {
                         }
                     };
 
-                    // Sparke Rendering
-                    unordered_map<pair<uint16_t, uint16_t>, CES_XY, PairHash> Cell_Storages;
-                    // Dirty-Region-Rendiner
-                    unordered_map<pair<uint16_t, uint16_t>, bool, PairHash> Cell_Changed;
+                    // Idea -- Rendering fast in a terminal engine:
+                    //  1. The main Threads (developer threads) are writing their cells into the 'change'
+                    //  2. When the main code calls the 'CES::CES_Screen::OutputCurWindow()'-method this will happen:
+                    //      1. The current vector is sorted after the z-index.
+                    //      2. 4 worker threads are made which are getting a pointer to the current sorted vector.
+                    //          -> A worker thread works as followed:
+                    //              1. If the current cell is NOT in his area, he will continue with the iteration
+                    //              2. If the current cell is in his area, he will do the following steps:
+                    //                  1. He checks if the position of this cell already exists in his own pair set (sorted<pair<...,...>>)
+                    //                  2. If it does he will continue with the iteration
+                    //                  3. If not he will write this cell in the pair set as well as in his area 'unordered_set'.
+                    //      3. After all threads are done calculating every cell, they will return their hash set of cells.
+                    //      4. The Render thread is then outputing those cells in the terminal.
+                    //      5. 'change' is cleared afterwards
+                    //
+                    // ! --> IMPORTANT: THE 'change' is ONLY for changes.
+                    //  Means if you do no changes, then the frame will be CONSTANT the same.
+                    // ! -> Also: If a cell needs to be deleted use the following steps:
+                    //  1. Write the z index of the cells at MINIMUM.
+                    //  2. Change their character to: ' '
+                    //  3. Make their color black.
+                    //  4. Insert this cell into the 'change'
+                    vector<CES::CES_XY> change;
+                    unordered_map<pair<int,int>, CES::CES_XY, PairHash> remove;
+                    unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame;
+                    mutex mtx_write;
             };
 
         #endif
@@ -413,6 +761,137 @@ class CES {
         #ifdef CES_GRID_SYSTEM
 
         #endif
+
+        #ifdef CES_THREAD_POOL
+            class ThreadPool {
+                private:
+                    using Task = function<void()>;
+                    using PersistentTask = function<void(atomic_bool&)>;
+
+                    /* One-time worker pool */
+                    vector<thread> workers;
+                    queue<Task> task_queue;
+                    mutex queue_mtx;
+                    condition_variable cv;
+                    atomic_bool stop{false};
+
+                    /* Persistent workers */
+                    vector<thread> persistent_workers;
+                    vector<unique_ptr<atomic_bool>> persistent_flags;
+                    mutex persistent_mtx;
+
+                public:
+                    explicit ThreadPool(size_t thread_count) {
+                        for (size_t i = 0; i < thread_count; ++i) {
+                            workers.emplace_back([this] {
+                                worker_loop();
+                            });
+                        }
+                    }
+
+                    /* ThreadPool cannot be copied or moved */
+                    ThreadPool(const ThreadPool&) = delete;
+                    ThreadPool& operator=(const ThreadPool&) = delete;
+
+                    ~ThreadPool() {
+                        shutdown();
+                    }
+
+                    /* Works once not consistent */
+                    void enqueue(Task task) {
+                        {
+                            lock_guard<mutex> lock(queue_mtx);
+                            if (stop.load(memory_order_relaxed)) {
+                                return;
+                            }
+                            task_queue.push(move(task));
+                        }
+                        cv.notify_one();
+                    }
+
+                    /* Persistent task  */
+                    void start_persistent(PersistentTask task) {
+                        auto flag = make_unique<atomic_bool>(true);
+                        atomic_bool& flag_ref = *flag;
+
+                        lock_guard<mutex> lock(persistent_mtx);
+                        persistent_flags.push_back(move(flag));
+
+                        persistent_workers.emplace_back([task, &flag_ref] {
+                            try {
+                                while (flag_ref.load(memory_order_acquire)) {
+                                    task(flag_ref);
+                                    this_thread::yield(); // stops busy-wait
+                                }
+                            } catch (...) {
+                                /* thread must not destroy the pool */
+                            }
+                        });
+                    }
+
+                private:
+                    void worker_loop() {
+                        while (true) {
+                            Task task;
+
+                            {
+                                unique_lock<mutex> lock(queue_mtx);
+                                cv.wait(lock, [this] {
+                                    return stop.load(memory_order_acquire) || !task_queue.empty();
+                                });
+
+                                if (stop.load(memory_order_relaxed) && task_queue.empty()) {
+                                    return;
+                                }
+
+                                task = move(task_queue.front());
+                                task_queue.pop();
+                            }
+
+                            try {
+                                task();
+                            } catch (...) {
+                                /* thread must not destroy the pool */
+                            }
+                        }
+                    }
+
+                    void shutdown() {
+                        /* One-time worker stopping */
+                        {
+                            lock_guard<mutex> lock(queue_mtx);
+                            stop.store(true, memory_order_release);
+                        }
+                        cv.notify_all();
+
+                        for (auto& t : workers) {
+                            if (t.joinable()) {
+                                t.join();
+                            }
+                        }
+
+                        /* Persistent worker stopping */
+                        {
+                            lock_guard<mutex> lock(persistent_mtx);
+                            for (auto& flag : persistent_flags) {
+                                flag->store(false, memory_order_release);
+                            }
+                        }
+
+                        for (auto& t : persistent_workers) {
+                            if (t.joinable()) {
+                                t.join();
+                            }
+                        }
+                    }
+                };
+        #endif
+
+        /*
+        *
+        *   Doesn't work yet. But not as a priority listed either.
+        * 
+        */
 
         #ifdef CES_COLOR_UNIT
             // Its not necessary during an easy project
@@ -532,23 +1011,23 @@ class CES {
                 // First if is RED, second is GREEN, third is BLUE
                 // It's not the best solution till now, but it makes it easier to read
                 // 8 color terminal
-                    if (CES_CC_A(red, green, blue, 0,0,0))   color->Convert_HEX_24(CES_16_BLACK);
-                else if (CES_CC_A(red, green, blue, 2,0,0))   color->Convert_HEX_24(CES_16_RED);
-                else if (CES_CC_A(red, green, blue, 0,2,0))   color->Convert_HEX_24(CES_16_GREEN);
-                else if (CES_CC_A(red, green, blue, 2,2,0))   color->Convert_HEX_24(CES_16_YELLOW);
-                else if (CES_CC_A(red, green, blue, 0,0,2))   color->Convert_HEX_24(CES_16_BLUE);
-                else if (CES_CC_A(red, green, blue, 2,0,2))   color->Convert_HEX_24(CES_16_MAGENTA);
-                else if (CES_CC_A(red, green, blue, 0,2,2))   color->Convert_HEX_24(CES_16_CYAN);
-                else if (CES_CC_A(red, green, blue, 3,3,3))   color->Convert_HEX_24(CES_16_LIGHT_GRAY);
+                    if (CES_CC_A(red, green, blue, 0,0,0))    color->Convert_Without_Alpha(CES_16_BLACK);
+                else if (CES_CC_A(red, green, blue, 2,0,0))   color->Convert_Without_Alpha(CES_16_RED);
+                else if (CES_CC_A(red, green, blue, 0,2,0))   color->Convert_Without_Alpha(CES_16_GREEN);
+                else if (CES_CC_A(red, green, blue, 2,2,0))   color->Convert_Without_Alpha(CES_16_YELLOW);
+                else if (CES_CC_A(red, green, blue, 0,0,2))   color->Convert_Without_Alpha(CES_16_BLUE);
+                else if (CES_CC_A(red, green, blue, 2,0,2))   color->Convert_Without_Alpha(CES_16_MAGENTA);
+                else if (CES_CC_A(red, green, blue, 0,2,2))   color->Convert_Without_Alpha(CES_16_CYAN);
+                else if (CES_CC_A(red, green, blue, 3,3,3))   color->Convert_Without_Alpha(CES_16_LIGHT_GRAY);
                 // 16 color terminal
-                else if (CES_CC_A(red, green, blue, 2,2,2))   color->Convert_HEX_24(CES_16_GRAY);
-                else if (CES_CC_A(red, green, blue, 4,0,0))   color->Convert_HEX_24(CES_16_BRIGHT_RED);
-                else if (CES_CC_A(red, green, blue, 0,4,0))   color->Convert_HEX_24(CES_16_BRIGHT_GREEN);
-                else if (CES_CC_A(red, green, blue, 4,4,0))   color->Convert_HEX_24(CES_16_BRIGHT_YELLOW);
-                else if (CES_CC_A(red, green, blue, 0,0,4))   color->Convert_HEX_24(CES_16_BRIGHT_BLUE);
-                else if (CES_CC_A(red, green, blue, 4,0,4))   color->Convert_HEX_24(CES_16_BRIGHT_MAGENTA);
-                else if (CES_CC_A(red, green, blue, 0,4,4))   color->Convert_HEX_24(CES_16_BRIGHT_CYAN);
-                else if (CES_CC_A(red, green, blue, 4,4,4))   color->Convert_HEX_24(CES_16_WHITE);
+                else if (CES_CC_A(red, green, blue, 2,2,2))   color->Convert_Without_Alpha(CES_16_GRAY);
+                else if (CES_CC_A(red, green, blue, 4,0,0))   color->Convert_Without_Alpha(CES_16_BRIGHT_RED);
+                else if (CES_CC_A(red, green, blue, 0,4,0))   color->Convert_Without_Alpha(CES_16_BRIGHT_GREEN);
+                else if (CES_CC_A(red, green, blue, 4,4,0))   color->Convert_Without_Alpha(CES_16_BRIGHT_YELLOW);
+                else if (CES_CC_A(red, green, blue, 0,0,4))   color->Convert_Without_Alpha(CES_16_BRIGHT_BLUE);
+                else if (CES_CC_A(red, green, blue, 4,0,4))   color->Convert_Without_Alpha(CES_16_BRIGHT_MAGENTA);
+                else if (CES_CC_A(red, green, blue, 0,4,4))   color->Convert_Without_Alpha(CES_16_BRIGHT_CYAN);
+                else if (CES_CC_A(red, green, blue, 4,4,4))   color->Convert_Without_Alpha(CES_16_WHITE);
 
                 return;
             }
@@ -619,7 +1098,7 @@ class CES {
                             delete sound;
                             holding_sound.erase(path);
                         } else {
-                            // Asynchron abspielen
+                            // Asynchron
                             thread([sound, this, path]() {
                                 while (ma_sound_is_playing(sound)) {
                                     this_thread::sleep_for(chrono::milliseconds(50));
@@ -633,7 +1112,7 @@ class CES {
                         return 0;
                     }
 
-                    // Entfernt Sound aus dem System
+                    // removes sound from the system
                     int uninitSound(const string& path) {
                         lock_guard<mutex> lock(mtx);
                         auto it = holding_sound.find(path);
@@ -647,7 +1126,7 @@ class CES {
                         return 0;
                     }
 
-                    // Pausiert oder setzt Sound fort
+                    // Resumes sound
                     void PauseResumeSound(const string& path) {
                         ma_sound* sound = nullptr;
                         {
@@ -663,7 +1142,7 @@ class CES {
                         else ma_sound_start(sound);
                     }
 
-                    // Gibt Zeiger auf Sound zurück
+                    // returns a pointer to the sound currently playing to allow direct access to functions from 'miniaudio.h'
                     inline ma_sound* getSoundPTR(const string& path) {
                         lock_guard<mutex> lock(mtx);
                         auto it = holding_sound.find(path);
@@ -682,22 +1161,26 @@ class CES {
             #include <vector>
             #include <cmath>
             #include <unordered_set>
+            #include <algorithm>
             #define PI 3.1415926535897932384626433
 
             class CES_Shapes {
                 public:
-                    CES_Shapes() = default;
+                    CES_Shapes() {}
 
-                    // Nested types müssen den CES::Scope kennen
+                    static CES::CES_Screen* sys;
+
                     struct CES_Line {
                         CES::CES_XY a;
                         CES::CES_XY b;
                         vector<CES::CES_XY> l;
+                        int z;
 
-                        CES_Line() = default;
+                        CES_Line(int Z) : z(Z) {}
 
                         void calculate_line(CES::CES_XY& d, CES::CES_XY& e, char32_t c, CES::CES_COLOR color, bool change = false) {
                             if (((a == d && b == e) || (a == e && b == d)) && !change) return;
+                            l.clear();
 
                             int x0 = d.x, y0 = d.y;
                             int x1 = e.x, y1 = e.y;
@@ -719,6 +1202,7 @@ class CES {
                                 xy.y = y0;
                                 xy.ARGB = color;
                                 xy.c = c;
+                                xy.z = z;
 
                                 l.push_back(xy);
 
@@ -734,26 +1218,26 @@ class CES {
                                     y0 += sy;
                                 }
                             }
+
                         }
 
                         vector<CES::CES_XY>* pack_load_system_line() { return &l; }
-
-                        vector<CES::CES_XY> PartPolygonReturn() {
-                            vector<CES::CES_XY> tmp = l;
-                            l.clear();
-                            return tmp;
-                        }
                     };
 
                     struct CES_Circle {
                         CES::CES_XY a;
                         CES::CES_XY b;
                         vector<CES::CES_XY> l;
+                        vector<CES::CES_XY> clean;
+                        int z;
 
-                        CES_Circle() = default;
+                        CES_Circle(int Z) : z(Z) {}
 
                         void calculate_circle(CES::CES_XY& d, CES::CES_XY& e, char32_t c, CES::CES_COLOR color, bool change = false) {
                             if (((a == d && b == e) || (a == e && b == d)) && !change) return;
+
+                            clean = move(l);
+                            l.clear();
 
                             double xc = d.x;
                             double yc = d.y;
@@ -771,6 +1255,7 @@ class CES {
                                 CES::CES_XY xy;
                                 xy.x = static_cast<int>(round(x));
                                 xy.y = static_cast<int>(round(y));
+                                xy.z = z;
                                 xy.c = c;
                                 xy.ARGB = color;
 
@@ -782,30 +1267,379 @@ class CES {
                     };
 
                     struct CES_Polygon {
-                        unordered_set<CES::CES_XY, CES::CES_XY::CES_XY_Hash> exist;
-                        vector<CES::CES_XY> polygon;
+                        unordered_set<CES::CES_XY, CES::CES_XY::CES_XY_Hash> exist; // Original Points
+                        vector<CES::CES_XY> l;     // Edge Points
+                        vector<CES::CES_XY> clean;
+                        int z;
 
-                        CES_Polygon() = default;
+                        CES_Polygon(int Z) : z(Z) {}
 
-                        void calculate_polygon(const unordered_set<CES::CES_XY, CES::CES_XY::CES_XY_Hash>& xy, char32_t c, CES::CES_COLOR color, bool change = false) {
-                            if (CES::sets_equal(xy, exist) && !change) return;
+                        void calculate_polygon(const unordered_set<CES::CES_XY, CES::CES_XY::CES_XY_Hash>& xy, char32_t c, CES::CES_COLOR color, bool change = false)
+                        {
+                            // Exit if polygon is unchanged
+                            if (exist == xy)
+                                return;
 
-                            vector<CES::CES_XY> tmp(xy.begin(), xy.end());
+                            exist = xy;
 
-                            for (size_t i = 0; i < tmp.size() - 1; ++i) {
-                                CES_Line line;
-                                line.calculate_line(tmp[i], tmp[i+1], c, color, true);
-                                vector<CES::CES_XY> a = line.PartPolygonReturn();
-                                polygon.insert(polygon.end(), a.begin(), a.end());
+                            clean = move(l);
+                            l.clear();
+
+                            if (xy.size() < 2)
+                                return;
+
+                            vector<CES::CES_XY> tmp;
+                            tmp.reserve(xy.size());
+                            tmp.insert(tmp.end(), xy.begin(), xy.end());
+
+                            // Centroid
+                            double cx = 0.0, cy = 0.0;
+                            for (const auto& p : tmp) {
+                                cx += p.x;
+                                cy += p.y;
+                            }
+                            cx /= tmp.size();
+                            cy /= tmp.size();
+
+                            // Sort by polar angle, tie-break by distance
+                            sort(tmp.begin(), tmp.end(),
+                                [cx, cy](const CES::CES_XY& a, const CES::CES_XY& b) {
+                                    double aa = atan2(a.y - cy, a.x - cx);
+                                    double ab = atan2(b.y - cy, b.x - cx);
+                                    if (aa != ab)
+                                        return aa < ab;
+
+                                    double da = (a.x - cx) * (a.x - cx) + (a.y - cy) * (a.y - cy);
+                                    double db = (b.x - cx) * (b.x - cx) + (b.y - cy) * (b.y - cy);
+                                    return da < db;
+                                });
+
+                            // Bresenham
+                            auto draw_line =
+                                [&](const CES::CES_XY& d,
+                                    const CES::CES_XY& e,
+                                    char32_t ch,
+                                    CES::CES_COLOR ARGB,
+                                    int z)
+                            {
+                                int x0 = d.x, y0 = d.y;
+                                int x1 = e.x, y1 = e.y;
+
+                                int dx = abs(x1 - x0);
+                                int dy = abs(y1 - y0);
+
+                                int sx = (x0 < x1) ? 1 : -1;
+                                int sy = (y0 < y1) ? 1 : -1;
+
+                                int err = dx - dy;
+
+                                while (true) {
+                                    CES::CES_XY p;
+                                    p.x = x0;
+                                    p.y = y0;
+                                    p.z = z;
+                                    p.c = ch;
+                                    p.ARGB = ARGB;
+                                    l.push_back(p);
+
+                                    if (x0 == x1 && y0 == y1)
+                                        break;
+
+                                    int e2 = err << 1;
+                                    if (e2 > -dy) { err -= dy; x0 += sx; }
+                                    if (e2 <  dx) { err += dx; y0 += sy; }
+                                }
+                            };
+
+                            for (size_t i = 0; i + 1 < tmp.size(); ++i) {
+                                draw_line(tmp[i], tmp[i + 1], c, color, z);
                             }
 
-                            CES_Line line;
-                            line.calculate_line(tmp[0], tmp[tmp.size() - 1], c, color, true);
-                            vector<CES::CES_XY> a = line.PartPolygonReturn();
-                            polygon.insert(polygon.end(), a.begin(), a.end());
+                            // Closing edge
+                            draw_line(tmp.back(), tmp.front(), c, color, z);
                         }
 
-                        vector<CES::CES_XY>* pack_load_system_polygon() { return &polygon; }
+                        vector<CES::CES_XY>* pack_load_system_polygon() { return &l; }
+                    };
+
+                    struct CES_Ellipse {
+                        vector<CES::CES_XY> exist; // Original Points
+                        vector<CES::CES_XY> l;     // Edge Points
+                        vector<CES::CES_XY> clean;
+                        int z;
+
+                        CES_Ellipse(int Z) : z(Z) {}
+
+                        void calculate_ellipse(CES::CES_XY p1, float r1, float r2, char32_t c, CES::CES_COLOR color) {
+                            clean = move(l);
+                            l.clear();
+                            r1 *= 2; // To balance the terminal size of: 2:1.
+                            int x0 = static_cast<int>(p1.x);
+                            int y0 = static_cast<int>(p1.y);
+
+                            int x = 0;
+                            int y = static_cast<int>(r2);
+                            int rx2 = static_cast<int>(r1 * r1);
+                            int ry2 = static_cast<int>(r2 * r2);
+                            int tworx2 = 2 * rx2;
+                            int twory2 = 2 * ry2;
+                            int px = 0;
+                            int py = tworx2 * y;
+
+                            int p = static_cast<int>(ry2 - (rx2 * r2) + (0.25f * rx2));
+                            while (px < py) {
+                                auto plot = [&](int dx, int dy){
+                                    CES::CES_XY pt1, pt2, pt3, pt4;
+                                    pt1.x = x0 + dx, pt1.y = y0 + dy, pt1.c = c, pt1.ARGB = color;
+                                    pt2.x = x0 - dx, pt2.y = y0 + dy, pt2.c = c, pt2.ARGB = color;
+                                    pt3.x = x0 + dx, pt3.y = y0 - dy, pt3.c = c, pt3.ARGB = color;
+                                    pt4.x = x0 - dx, pt4.y = y0 - dy, pt4.c = c, pt4.ARGB = color;
+                                    l.push_back(pt1);
+                                    l.push_back(pt2);
+                                    l.push_back(pt3);
+                                    l.push_back(pt4);
+                                };
+                                plot(x, y);
+                                x++;
+                                px += twory2;
+                                if (p < 0)
+                                    p += ry2 + px;
+                                else {
+                                    y--;
+                                    py -= tworx2;
+                                    p += ry2 + px - py;
+                                }
+                            }
+
+                            p = static_cast<int>(ry2 * (x + 0.5f) * (x + 0.5f) + rx2 * (y - 1) * (y - 1) - rx2 * ry2);
+                            while (y >= 0) {
+                                auto plot = [&](int dx, int dy){
+                                    CES::CES_XY pt1, pt2, pt3, pt4;
+                                    pt1.x = x0 + dx, pt1.y = y0 + dy, pt1.c = c, pt1.ARGB = color, pt1.z = z;
+                                    pt2.x = x0 - dx, pt2.y = y0 + dy, pt2.c = c, pt2.ARGB = color, pt2.z = z;
+                                    pt3.x = x0 + dx, pt3.y = y0 - dy, pt3.c = c, pt3.ARGB = color, pt3.z = z;
+                                    pt4.x = x0 - dx, pt4.y = y0 - dy, pt4.c = c, pt4.ARGB = color, pt4.z = z;
+                                    l.push_back(pt1);
+                                    l.push_back(pt2);
+                                    l.push_back(pt3);
+                                    l.push_back(pt4);
+                                };
+                                plot(x, y);
+                                y--;
+                                py -= tworx2;
+                                if (p > 0)
+                                    p += rx2 - py;
+                                else {
+                                    x++;
+                                    px += twory2;
+                                    p += rx2 - py + px;
+                                }
+                            }
+
+                        }
+
+                        vector<CES::CES_XY>* pack_load_system_ellipse() { return &l; }
+                    };
+                    
+                    class CES_Transformation {
+                        public:
+                            // The clean setup doesn't need to send the clean points to the system.
+                            /*
+                            *
+                            *   Still one error; If there is more than one area to fill, it will only fill one.
+                            *   --> Should fill all available areas of a shape. 
+                            * 
+                            */
+                            int fill_shape(vector<CES::CES_XY>* list, CES::CES_COLOR color, uint32_t c) {
+                                if (!list || list->empty()) return 0;
+
+                                long sumX = 0, sumY = 0;
+                                for (auto& p : *list) {
+                                    sumX += p.x;
+                                    sumY += p.y;
+                                }
+                                int cx = int(sumX / list->size());
+                                int cy = int(sumY / list->size());
+                                int z = (*list)[0].z;
+
+                                auto isBorder = [&](int x, int y) {
+                                    for (auto& p : *list)
+                                        if (p.x == x && p.y == y)
+                                            return true;
+                                    return false;
+                                };
+
+                                if (isBorder(cx, cy)) {
+                                    static const int off[4][2] = {
+                                        {1,0},{-1,0},{0,1},{0,-1}
+                                    };
+                                    bool found = false;
+                                    for (auto& o : off) {
+                                        if (!isBorder(cx + o[0], cy + o[1])) {
+                                            cx += o[0];
+                                            cy += o[1];
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!found)
+                                        return 0;
+                                }
+
+                                stack<pair<int,int>> st;
+                                st.push({cx, cy});
+
+                                set<pair<int,int>> visited;
+
+                                int filled = 0;
+
+                                while (!st.empty()) {
+
+                                    auto [x, y] = st.top(); st.pop();
+                                    if (visited.count({x,y})) continue;
+                                    visited.insert({x,y});
+
+                                    if (isBorder(x, y)) continue;
+
+                                    CES::CES_XY p;
+                                    p.x = x;
+                                    p.y = y;
+                                    p.c = c;
+                                    p.z = z;
+                                    p.ARGB = color;
+                                    list->push_back(p);
+                                    filled++;
+
+                                    st.push({x+1, y});
+                                    st.push({x-1, y});
+                                    st.push({x, y+1});
+                                    st.push({x, y-1});
+                                }
+
+                                return filled;
+                            }
+
+                            int rotation(std::vector<CES::CES_XY>* xy, double deg)
+                            {
+                                if (xy->empty())
+                                    return -1;
+
+                                // Calculate heavypoint
+                                double cx = 0.0;
+                                double cy = 0.0;
+
+                                for (const auto& p : *xy) {
+                                    cx += p.x;
+                                    cy += p.y;
+                                }
+
+                                cx /= xy->size();
+                                cy /= xy->size();
+
+                                // Calculate angle
+                                const double rad = deg * PI / 180.0;
+                                const double cosA = std::cos(rad);
+                                const double sinA = std::sin(rad);
+
+                                // rotate
+                                for (auto& p : *xy) {
+                                    const double x = p.x - cx;
+                                    const double y = p.y - cy;
+
+                                    const double xNew = x * cosA - y * sinA;
+                                    const double yNew = x * sinA + y * cosA;
+
+                                    // korrekt runden statt abschneiden
+                                    p.x = static_cast<int>(std::lround(xNew + cx));
+                                    p.y = static_cast<int>(std::lround(yNew + cy));
+                                }
+
+                                return 0;
+                            }
+
+                            int scale(std::vector<CES::CES_XY>* xy, float scale)
+                            {
+                                if (xy == nullptr || xy->size() < 3)
+                                    return -1;
+
+                                // Calculate heavypoint
+                                double cx = 0.0, cy = 0.0;
+                                for (const auto& p : *xy) {
+                                    cx += p.x;
+                                    cy += p.y;
+                                }
+                                cx /= xy->size();
+                                cy /= xy->size();
+
+                                // Scale points
+                                struct P { CES::CES_XY p; double ang; };
+
+                                std::vector<P> pts;
+                                pts.reserve(xy->size());
+
+                                for (const auto& p : *xy) {
+                                    CES::CES_XY s = p;
+                                    s.x = static_cast<int>(std::lround((p.x - cx) * scale + cx));
+                                    s.y = static_cast<int>(std::lround((p.y - cy) * scale + cy));
+
+                                    double ang = std::atan2(
+                                        static_cast<double>(s.y) - cy,
+                                        static_cast<double>(s.x) - cx
+                                    );
+
+                                    pts.push_back({ s, ang });
+                                }
+
+                                // Sort after angle (curve parameter)
+                                std::sort(pts.begin(), pts.end(),
+                                    [](const P& a, const P& b) { return a.ang < b.ang; });
+
+                                std::vector<CES::CES_XY> result;
+                                constexpr double MAX_DIST = 1.0;
+
+                                auto densify = [&](const CES::CES_XY& a, const CES::CES_XY& b)
+                                {
+                                    result.push_back(a);
+
+                                    double dx = b.x - a.x;
+                                    double dy = b.y - a.y;
+                                    double d = std::hypot(dx, dy);
+
+                                    int steps = static_cast<int>(std::ceil(d / MAX_DIST));
+                                    for (int i = 1; i < steps; ++i) {
+                                        double t = static_cast<double>(i) / steps;
+                                        CES::CES_XY p = a;
+                                        p.x = static_cast<int>(std::lround(a.x + t * dx));
+                                        p.y = static_cast<int>(std::lround(a.y + t * dy));
+                                        result.push_back(p);
+                                    }
+                                };
+
+                                // curve resample
+                                for (size_t i = 0; i < pts.size(); ++i) {
+                                    const auto& a = pts[i].p;
+                                    const auto& b = pts[(i + 1) % pts.size()].p; // closed.
+                                    densify(a, b);
+                                }
+
+                                xy->swap(result);
+                                return 0;
+                            }
+
+                            /*
+                            *
+                            * Not tested yet.
+                            * 
+                            */
+
+
+                            bool collision(vector<CES::CES_XY>* x, vector<CES::CES_XY>* y) {
+                                unordered_set<CES::CES_XY, CES::CES_XY::CES_XY_Hash> xyz(y->begin(), y->end());
+                                for (auto& c : *x) {
+                                    if (xyz.count(c)) return true;
+                                }
+                                return false;
+                            }
                     };
             };
     #endif
