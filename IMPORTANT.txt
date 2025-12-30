@@ -1,3 +1,4 @@
 - miniaudio.h is not my file. It is owned by David Reid -> https://github.com/mackron/miniaudio
+- json.hpp is not my file. It is owned by Niels Lohmann -> https://github.com/nlohmann/json
 
 - If your project will have audio then you need the 'miniaudio.h' file
