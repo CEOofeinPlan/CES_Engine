@@ -20,16 +20,33 @@
     #include <variant>
     #include <fstream>
     #include <iostream>
+    #include <regex>
+    #include <cstring>
+    #include <tuple>
+
+    namespace fs = std::filesystem;
 
 
     #if defined(_WIN32)
         #include <windows.h>
     #endif
 
-    #if defined(__linux__) || defined(__APPLE__)
+    #if defined(__linux__)
         #include <unistd.h>
         #include <termios.h>
         #include <fcntl.h>
+        #include <climits>
+        #include <linux/input.h>
+    #endif
+
+    #if defined(__APPLE__)
+        #include <unistd.h>
+        #include <termios.h>
+        #include <fcntl.h>
+        #include <climits>
+        #include <sys/ioctl.h>
+        #include <cstdio>
+        #include <sys/types.h>
     #endif
 
 using namespace std;
@@ -89,8 +106,8 @@ class CES {
         };
 
         struct CES_XY {
-            int x; // max. 65K Character
-            int y; // max. 65K Character
+            int x; // Enough to fit 8K in it
+            int y; // Enough to fit 8K in it
             int z;      // Enough layers 
             
             CES_COLOR ARGB; // Alpha-Red-Green-Blue
@@ -109,8 +126,14 @@ class CES {
             };
             CES_XY(int X, int Y, int Z, CES_COLOR color, char32_t C) : x(X), y(Y), z(Z), ARGB(color), c(C) {};
             CES_XY(CES_XY&&) noexcept = default;
-            CES_XY& operator=(const CES_XY&) = default;
-            CES_XY& operator=(CES_XY&&) noexcept = default;
+            CES_XY& operator=(const CES_XY& o) {
+                this->ARGB = o.ARGB;
+                this->c = o.c;
+                this->x = o.x;
+                this->y = o.y;
+                this->z = o.z;
+                return *this;
+            }
 
             bool operator==(const CES_XY& other) const noexcept {
                 return x == other.x
@@ -245,6 +268,8 @@ class CES {
                         // Mouse:           True (Windows Terminal)
 
                     TerminalCapabilities supported;
+
+                    /*#define Func für FPS*/
                     
                     CES_Screen()
                     {
@@ -344,6 +369,13 @@ class CES {
                                 supported.supportsMouse = true;
                                 supported.supportsCursor = true;
                             }
+
+                            hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                            
+                            DWORD dwMode = 0;
+                            GetConsoleMode(hOut, &dwMode);
+                            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                            SetConsoleMode(hOut, dwMode);
                             
                         #elif defined(__linux__) || defined(__APPLE__)
                             // Cursor
@@ -387,6 +419,9 @@ class CES {
 
                         // Bringing the terminal in a constant state of no scrolling
                         cout << "\033[?1049h";
+
+                        change.resize(height*width);
+                        frame.resize(height*width);
                     }
 
                     ~CES_Screen() {
@@ -396,18 +431,53 @@ class CES {
                         cout << "\033[1;1H";
                     }
 
-                    void OutputCurWindow() {
+                    /*void OutputCurWindow() {
+                        pair<int, int> size = WidthHeight(); // Engine Size
+
+                        // Windows Buffer Size
+                        #if defined(_WIN32)
+                            CONSOLE_SCREEN_BUFFER_INFO info;
+                            GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info);
+
+                            int win_buf_width = info.dwSize.X;
+                            int win_buf_height = info.dwSize.Y;
+                        #endif
+
+                        unique_lock<mutex> lock_all(mtx_write);
+
+                        #if defined(_WIN32)
+                            GetConsoleScreenBufferInfo(hOut, &info);
+                            COORD newSize;
+                            newSize.X = max(win_buf_width, size.first);
+                            newSize.Y = max(win_buf_height, size.second);
+
+                            SetConsoleScreenBufferSize(hOut, newSize);
+
+                            SMALL_RECT rect;
+                            rect.Left = 0;
+                            rect.Top = 0;
+                            rect.Right = newSize.X-1;
+                            rect.Bottom = newSize.Y-1;
+                            
+                            SetConsoleWindowInfo(hOut, TRUE, &rect);
+                        #endif
+
                         sort(change.begin(), change.end(), [](const CES::CES_XY& a, const CES::CES_XY& b) {
                             return a.z < b.z;
                         });
 
                         auto main = &change;
-                        auto erase = &remove;
-                        auto cur = &frame;
-                        auto mtx = &mtx_write;
-                        pair<int, int> size = WidthHeight();
+                        auto dele = &erase_frame;
+
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame_0 = frame;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame_1 = frame;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame_2 = frame;
+                        unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame_3 = frame;
+
+                        #define CES_THREAD_POOL
 
                         ThreadPool pool(4);
+
                         unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_0;
                         unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_1;
                         unordered_map<pair<int,int>, CES::CES_XY, PairHash> thread_2;
@@ -416,7 +486,7 @@ class CES {
                         // ! Tiles are numbered clockwise. (Thread 0: left-top, thread 1: right-top, thread 2: right-bottom, thread 3: left-bottom)
                         atomic<int> remaining = 4;
                         // Thread 0
-                        pool.enqueue([&main, &size, &thread_0, &remaining, &cur, &erase, &mtx]() {
+                        pool.enqueue([&main, &size, &thread_0, &remaining, &frame_0, &dele]() {
                             int x = size.first;
                             int y = size.second;
                             int x_start = 0;
@@ -424,13 +494,11 @@ class CES {
                             int x_end = x / 2;
                             int y_end = y / 2;
 
-                            for (auto& [p, c] : *erase) {
+                            for (auto& [p, c] : *dele) {
                                 x = c.x;
                                 y = c.y;
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                unique_lock<mutex> lock(*mtx);
-                                cur->erase({x,y});
-                                lock.unlock();
+                                frame_0.erase({x,y});
                                 // INT_MIN so the next for loop can overwrite it.
                                 CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
                                 thread_0[{x,y}] = xy;
@@ -441,10 +509,11 @@ class CES {
                                 y = c.y;
                                 // If the current cell is in the thread area, if not CONTINUE.
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                if (cur->count({x,y})) {
-                                    auto it = cur->find({x,y});
+                                if (frame_0.count({x,y})) {
+                                    auto it = frame_0.find({x,y});
                                     if (it->second.z >= c.z) continue;
                                 }
+
                                 // Due to this operation: "==" only x and y will be compared, nothing more.
                                 // If the cell does not exist; It will be inserted.
                                 thread_0[{x,y}] = c;
@@ -453,7 +522,7 @@ class CES {
                         });
 
                         // Thread 1
-                        pool.enqueue([&main, &size, &thread_1, &remaining, &cur, &erase, &mtx]() {
+                        pool.enqueue([&main, &size, &thread_1, &remaining, &frame_1, &dele]() {
                             int x = size.first;
                             int y = size.second;
                             int x_start = x/2;
@@ -461,13 +530,11 @@ class CES {
                             int x_end = x;
                             int y_end = y/2;
 
-                            for (auto& [p, c] : *erase) {
+                            for (auto& [p, c] : *dele) {
                                 x = c.x;
                                 y = c.y;
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                unique_lock<mutex> lock(*mtx);
-                                cur->erase({x,y});
-                                lock.unlock();
+                                frame_1.erase({x,y});
                                 // INT_MIN so the next for loop can overwrite it.
                                 CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
                                 thread_1[{x,y}] = xy;
@@ -478,8 +545,8 @@ class CES {
                                 y = c.y;
                                 // If the current cell is in the thread area, if not CONTINUE.
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                if (cur->count({x,y})) {
-                                    auto it = cur->find({x,y});
+                                if (frame_1.count({x,y})) {
+                                    auto it = frame_1.find({x,y});
                                     if (it->second.z >= c.z) continue;
                                 }
                                 // Due to this operation: "==" only x and y will be compared, nothing more.
@@ -490,7 +557,7 @@ class CES {
                         });
 
                         // Thread 2
-                        pool.enqueue([&main, &size, &thread_2, &remaining, &cur, &erase, &mtx]() {
+                        pool.enqueue([&main, &size, &thread_2, &remaining, &frame_2, &dele]() {
                             int x = size.first;
                             int y = size.second;
                             int x_start = x/2;
@@ -498,13 +565,11 @@ class CES {
                             int x_end = x;
                             int y_end = y;
 
-                            for (auto& [p, c] : *erase) {
+                            for (auto& [p, c] : *dele) {
                                 x = c.x;
                                 y = c.y;
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                unique_lock<mutex> lock(*mtx);
-                                cur->erase({x,y});
-                                lock.unlock();
+                                frame_2.erase({x,y});
                                 // INT_MIN so the next for loop can overwrite it.
                                 CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
                                 thread_2[{x,y}] = c;
@@ -515,8 +580,8 @@ class CES {
                                 y = c.y;
                                 // If the current cell is in the thread area, if not CONTINUE.
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                if (cur->count({x,y})) {
-                                    auto it = cur->find({x,y});
+                                if (frame_2.count({x,y})) {
+                                    auto it = frame_2.find({x,y});
                                     if (it->second.z >= c.z) continue;
                                 }
                                 // Due to this operation: "==" only x and y will be compared, nothing more.
@@ -527,7 +592,7 @@ class CES {
                         });
 
                         // Thread 3
-                        pool.enqueue([&main, &size, &thread_3, &remaining, &cur, &erase, &mtx]() {
+                        pool.enqueue([&main, &size, &thread_3, &remaining, &frame_3, &dele]() {
                             int x = size.first;
                             int y = size.second;
                             int x_start = 0;
@@ -535,13 +600,11 @@ class CES {
                             int x_end = x/2;
                             int y_end = y;
 
-                            for (auto& [p, c] : *erase) {
+                            for (auto& [p, c] : *dele) {
                                 x = c.x;
                                 y = c.y;
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                unique_lock<mutex> lock(*mtx);
-                                cur->erase({x,y});
-                                lock.unlock();
+                                frame_3.erase({x,y});
                                 // INT_MIN so the next for loop can overwrite it.
                                 CES::CES_XY xy(c.x,c.y,INT_MIN,CES_COLOR(0,0,0),' ');
                                 thread_3[{x,y}] = c;
@@ -552,8 +615,8 @@ class CES {
                                 y = c.y;
                                 // If the current cell is in the thread area, if not CONTINUE.
                                 if (x < x_start || x >= x_end || y < y_start || y >= y_end) continue;
-                                if (cur->count({x,y})) {
-                                    auto it = cur->find({x,y});
+                                if (frame_3.count({x,y})) {
+                                    auto it = frame_3.find({x,y});
                                     if (it->second.z >= c.z) continue;
                                 }
                                 // Due to this operation: "==" only x and y will be compared, nothing more.
@@ -565,6 +628,7 @@ class CES {
 
                         while (remaining.load(memory_order_acquire) > 0) {
                             this_thread::yield();
+                            this_thread::sleep_for(chrono::milliseconds(1));
                         }
                         string everything = "";
                         for (auto& c : thread_3) {
@@ -572,13 +636,11 @@ class CES {
                             everything += " ";
                         }
 
-                        ofstream("Debug.txt") << everything << endl;
-
-
                         string framebuffer;
 
                         // Thread 0
                         for (auto& [p, c] : thread_0) {
+                            
                             framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
                             framebuffer += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
@@ -586,11 +648,11 @@ class CES {
                                         to_string((int)c.ARGB.b) + "m";
                             framebuffer += c.convertCHAR32toCHAR(c.c);
                             framebuffer += "\033[0m";
-                            //if (c.x == 15 && c.y == 11 && c.c == ' ') ofstream("Debug.txt") << "true" << endl;
                         }
 
                         // Thread 1
                         for (auto& [p, c] : thread_1) {
+                            
                             framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
                             framebuffer += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
@@ -598,11 +660,11 @@ class CES {
                                         to_string((int)c.ARGB.b) + "m";
                             framebuffer += c.convertCHAR32toCHAR(c.c);
                             framebuffer += "\033[0m";
-                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
                         }
 
                         // Thread 2
                         for (auto& [p, c] : thread_2) {
+                            
                             framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
                             framebuffer += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
@@ -610,11 +672,11 @@ class CES {
                                         to_string((int)c.ARGB.b) + "m";
                             framebuffer += c.convertCHAR32toCHAR(c.c);
                             framebuffer += "\033[0m";
-                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
                         }
 
                         // Thread 3
                         for (auto& [p, c] : thread_3) {
+                            
                             framebuffer += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
                             framebuffer += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
@@ -622,36 +684,237 @@ class CES {
                                         to_string((int)c.ARGB.b) + "m";
                             framebuffer += c.convertCHAR32toCHAR(c.c);
                             framebuffer += "\033[0m";
-                            //if (c.x == 15 && c.y == 11) ofstream("Debug.txt") << "true" << endl;
                         }
 
                         // Hide Cursor
                         framebuffer += "\033[?25l";
+                        if (framebuffer.find('-') != std::string::npos) {
+    std::ofstream("Debug.txt") << "Ja\n";
+}
+
                         #if defined(_WIN32)
-                            DWORD written;
-                            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE),
-                                    framebuffer.data(),
-                                    (DWORD)framebuffer.size(),
-                                    &written,
-                                    nullptr);
+                            DWORD written = 0;
+                            WriteConsoleA(
+                                hOut,
+                                framebuffer.data(),
+                                static_cast<DWORD>(framebuffer.size()),
+                                &written,
+                                nullptr
+                            );
                         #else
                             write(STDOUT_FILENO, framebuffer.data(), framebuffer.size());
                         #endif
 
                         // ! Needs to be cleared.
                         change.clear();
+                        erase_frame.clear();
                         frame.insert(thread_0.begin(), thread_0.end());
                         frame.insert(thread_1.begin(), thread_1.end());
                         frame.insert(thread_2.begin(), thread_2.end());
                         frame.insert(thread_3.begin(), thread_3.end());
-                    }
 
-                    void OutputCurWindowAlias() {
+                        lock_all.unlock();  // <-- Lock from the start of this function
+                    }*/
 
+                    void OutputCurWindow() {
+                        // Terminal Size
+                        pair<int, int> size = WidthHeight();
+                        // Blocking every thread to write anything else
+                        unique_lock<mutex> lock_all(mtx_write);
+
+                        // Important pointer pointing to the storage of the 'change'.
+                        auto main = &change;
+                        
+                        // A compiler definition for opening the 'CES_THREAD_POOL'-Unit.
+                        // ! Note: Basically you don't have to define 'CES_THREAD_POOL' in your main code when you are defining: 'CES_CELL_SYSTEM'.
+
+                        #define CES_THREAD_POOL
+
+                        // A Threadpool with 4 threads is needed to split the screen of the terminal for optimize rendering.
+                        ThreadPool pool(4);
+
+                        // Defining 4 objects for storing every calculated cell on each area of threads. (new frame)
+                        string thread_0;
+                        string thread_1;
+                        string thread_2;
+                        string thread_3;
+
+                        // !
+                        // ! Tiles are numbered clockwise. (Thread 0: left-top, thread 1: right-top, thread 2: right-bottom, thread 3: left-bottom)
+                        // !
+
+                        // This variable is waiting for every thread to finish
+                        // Then the main thread will proceed.
+                        atomic<int> remaining = 4;
+
+                        // Thread 0
+                        pool.enqueue([&main, &size, &thread_0, &remaining]() {
+                            // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
+                            int x = size.first;
+                            // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
+                            int y = size.second;
+
+                            // 'x_start' used to define the START for x for the area of this thread.
+                            int x_start = 0; 
+                            // Same applies for the y.
+                            int y_start = 0;
+                            // ! --> START for thread 0 is in the UPPER LEFT CORNER.
+
+                            // 'x_end' used to define the END for x for the area of this thread.
+                            int x_end = x / 2;
+                            // Same applies for the y.
+                            int y_end = y / 2;
+                            // ! --> END for thread 0 is in the middle of the ENTIRE screen.
+
+                            /*Making ANSI more easier for the terminal*/
+                            CES_XY old;
+                            bool set = false;
+
+                            for (auto c : *main) {
+                                if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
+                                if (c.c == U'\0') continue;
+                                if (!set) {
+                                    goto normal_set;
+                                }
+                                if (old.ARGB == c.ARGB) {
+                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                } else {
+                                    if (old.c != U'\0') thread_0 += "\033[0m";
+                                    goto normal_set;
+                                }
+
+                                normal_set:
+                                    thread_0 += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                                    thread_0 += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    old = c;
+                                    set = true;
+                            }
+
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 1
+                        pool.enqueue([&main, &size, &thread_1, &remaining]() {
+                            // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
+                            int x = size.first;
+                            // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
+                            int y = size.second;
+
+                            // 'x_start' used to define the START for x for the area of this thread.
+                            int x_start = x/2; 
+                            // Same applies for the y.
+                            int y_start = 0;
+                            // ! --> START for thread 0 is in the UPPER LEFT CORNER.
+
+                            // 'x_end' used to define the END for x for the area of this thread.
+                            int x_end = x;
+                            // Same applies for the y.
+                            int y_end = y / 2;
+                            // ! --> END for thread 0 is in the middle of the ENTIRE screen.
+
+                            CES_XY old;
+
+                            for (auto c : *main) {
+                                if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
+                                if (c.c == NULL) continue;
+                                if (old.ARGB == c.ARGB) {
+                                    thread_1 += c.convertCHAR32toCHAR(c.c);
+                                } else {
+                                    if (old.c != NULL) thread_1 += "\033[0m";
+                                    thread_1 += "\033[" + to_string(c.y+1) + ";" + to_string(x+1) + "H";
+                                    thread_1 += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                                    thread_1 += c.convertCHAR32toCHAR(c.c);
+                                    old = c;
+                                }
+                            }
+
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 2
+                        pool.enqueue([&main, &size, &thread_0, &frame_0, &remaining, this]() {
+                            // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
+                            int x = size.first;
+                            // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
+                            int y = size.second;
+
+                            // 'x_start' used to define the START for x for the area of this thread.
+                            int x_start = x/2; 
+                            // Same applies for the y.
+                            int y_start = y/2;
+                            // ! --> START for thread 0 is in the UPPER LEFT CORNER.
+
+                            // 'x_end' used to define the END for x for the area of this thread.
+                            int x_end = x;
+                            // Same applies for the y.
+                            int y_end = y;
+                            // ! --> END for thread 0 is in the middle of the ENTIRE screen.
+
+                            for (auto c : *main) {
+                                if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
+                                if (c.c == NULL) continue;
+                                if (old.ARGB == c.ARGB) {
+                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                } else {
+                                    if (old.c != NULL) thread_0 += "\033[0m";
+                                    thread_0 += "\033[" + to_string(c.y+1) + ";" + to_string(x+1) + "H";
+                                    thread_0 += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    old = c;
+                                }
+                            }
+
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        // Thread 3
+                        pool.enqueue([&main, &size, &thread_0, &frame_0, &remaining, this]() {
+                            // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
+                            int x = size.first;
+                            // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
+                            int y = size.second;
+
+                            // 'x_start' used to define the START for x for the area of this thread.
+                            int x_start = 0;
+                            // Same applies for the y.
+                            int y_start = y/2;
+                            // ! --> START for thread 0 is in the UPPER LEFT CORNER.
+
+                            // 'x_end' used to define the END for x for the area of this thread.
+                            int x_end = x/2;
+                            // Same applies for the y.
+                            int y_end = y;
+                            // ! --> END for thread 0 is in the middle of the ENTIRE screen.
+
+                            for (auto c : *main) {
+                                if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
+                                this->set(c.x, c.y, thread_0, c);
+                            }
+
+                            remaining.fetch_sub(1, memory_order_release);
+                        });
+
+                        while (remaining.load(memory_order_acquire) > 0) {
+                            this_thread::yield();
+                            this_thread::sleep_for(chrono::milliseconds(1));
+                        }
                     }
 
                     inline void writeCell(CES::CES_XY& xy) {
-                        change.push_back(xy);
+                        unique_lock<mutex> lock_all(mtx_write); // <-- Write permission mutex
+                        if (at(xy.x, xy.y, frame).z >= xy.z) return;
+                        set(xy.x, xy.y, change, xy);
+                        lock_all.unlock();
                     }
 
                     void writeCell(int x, int y, int z, CES::CES_COLOR color, char32_t c) {
@@ -661,12 +924,18 @@ class CES {
                         xy.z = z;
                         xy.c = c;
                         xy.ARGB = color;
-                        change.push_back(xy);
+                        unique_lock<mutex> lock_all(mtx_write); // <-- Write permission mutex
+                        if (at(x, y, frame).z >= z) return;
+                        set(x, y, change, xy);
+                        lock_all.unlock();
                     }
 
                     inline void writeCell(vector<CES::CES_XY>* xy) {
                         for (auto& c : *xy) {
-                            change.push_back(c);
+                            unique_lock<mutex> lock_all(mtx_write);
+                            if (at(c.x, c.y, frame).z >= c.z) continue;
+                            set(c.x, c.y, change, c);
+                            lock_all.unlock();
                         }
                     }
 
@@ -674,17 +943,21 @@ class CES {
                         CES::CES_XY xy;
                         xy.x = x;
                         xy.y = y;
-                        xy.z = INT_MIN;
+                        xy.z = std::numeric_limits<int32_t>::min();
                         xy.c = ' ';
                         xy.ARGB = CES::CES_COLOR(0,0,0);
-                        remove[{xy.x,xy.y}] = xy;
+                        unique_lock<mutex> lock_all(mtx_write);
+                        set(x, y, change, xy);
+                        lock_all.unlock();
                     }
 
                     void removeCell(CES::CES_XY& xy) {
                         xy.ARGB = CES_COLOR(0,0,0);
                         xy.c = ' ';
                         xy.z = INT_MIN;
-                        remove[{xy.x,xy.y}] = xy;
+                        unique_lock<mutex> lock_all(mtx_write);
+                        set(xy.x, xy.y, change, xy);
+                        lock_all.unlock();
                     }
 
                     void removeCell(vector<CES::CES_XY>* xy) {
@@ -692,7 +965,9 @@ class CES {
                             c.ARGB = CES_COLOR(0,0,0);
                             c.z = INT_MIN;
                             c.c = ' ';
-                            remove[{c.x, c.y}] = c;
+                            unique_lock<mutex> lock_all(mtx_write);
+                            set(c.x, c.y, change, c);
+                            lock_all.unlock();
                         }
                     }
 
@@ -719,7 +994,12 @@ class CES {
                         cout << "\033[2J";      // Delete the screen
                         cout << "\033[1;1H";
                         cout << "\033[?25l";    // Hide cursor
+                        frame.clear();
+                        frame.resize(height*width);
                     }
+
+                    CES_XY& at(int x, int y, vector<CES_XY>& vec) { return vec[y*width+x]; }
+                    void set(int x, int y, vector<CES_XY>& vec, CES_XY& xy) { vec[y*width+x] = xy; }
                     
                     struct PairHash {
                         template <class T1, class T2>
@@ -740,25 +1020,28 @@ class CES {
                     //                  2. If it does he will continue with the iteration
                     //                  3. If not he will write this cell in the pair set as well as in his area 'unordered_set'.
                     //      3. After all threads are done calculating every cell, they will return their hash set of cells.
-                    //      4. The Render thread is then outputing those cells in the terminal.
+                    //      4. The Render thread is then outputting those cells in the terminal.
                     //      5. 'change' is cleared afterwards
                     //
                     // ! --> IMPORTANT: THE 'change' is ONLY for changes.
                     //  Means if you do no changes, then the frame will be CONSTANT the same.
-                    // ! -> Also: If a cell needs to be deleted use the following steps:
+                    // ! --> Also: If a cell needs to be deleted use the following steps:
                     //  1. Write the z index of the cells at MINIMUM.
                     //  2. Change their character to: ' '
                     //  3. Make their color black.
                     //  4. Insert this cell into the 'change'
-                    vector<CES::CES_XY> change;
-                    unordered_map<pair<int,int>, CES::CES_XY, PairHash> remove;
-                    unordered_map<pair<int,int>, CES::CES_XY, PairHash> frame;
+
+                    int height = WidthHeight().second;
+                    int width = WidthHeight().first;
+
+                    vector<CES_XY> change;
+                    vector<CES_XY> frame;
                     mutex mtx_write;
+                    
+                    #if defined(_WIN32)
+                        HANDLE hOut;
+                    #endif
             };
-
-        #endif
-
-        #ifdef CES_GRID_SYSTEM
 
         #endif
 
@@ -1218,7 +1501,15 @@ class CES {
                                     y0 += sy;
                                 }
                             }
+                        }
 
+                        void operator=(const CES_Line& o) {
+                            this->l.clear();
+                            this->l.insert(this->l.begin(), o.l.begin(), o.l.end());
+                        }
+
+                        void operator+=(const CES_Line& o) {
+                            this->l.insert(this->l.end(), o.l.begin(), o.l.end());
                         }
 
                         vector<CES::CES_XY>* pack_load_system_line() { return &l; }
@@ -1261,6 +1552,15 @@ class CES {
 
                                 l.push_back(xy);
                             }
+                        }
+
+                        void operator=(const CES_Circle& o) {
+                            this->l.clear();
+                            this->l.insert(this->l.begin(), o.l.begin(), o.l.end());
+                        }
+
+                        void operator+=(const CES_Circle& o) {
+                            this->l.insert(this->l.end(), o.l.begin(), o.l.end());
                         }
 
                         vector<CES::CES_XY>* pack_load_system_circle() { return &l; }
@@ -1359,6 +1659,15 @@ class CES {
                             draw_line(tmp.back(), tmp.front(), c, color, z);
                         }
 
+                        void operator=(const CES_Polygon& o) {
+                            this->l.clear();
+                            this->l.insert(this->l.begin(), o.l.begin(), o.l.end());
+                        }
+
+                        void operator+=(const CES_Polygon& o) {
+                            this->l.insert(this->l.end(), o.l.begin(), o.l.end());
+                        }
+
                         vector<CES::CES_XY>* pack_load_system_polygon() { return &l; }
                     };
 
@@ -1435,7 +1744,15 @@ class CES {
                                     p += rx2 - py + px;
                                 }
                             }
+                        }
 
+                        void operator=(const CES_Ellipse& o) {
+                            this->l.clear();
+                            this->l.insert(this->l.begin(), o.l.begin(), o.l.end());
+                        }
+
+                        void operator+=(const CES_Ellipse& o) {
+                            this->l.insert(this->l.end(), o.l.begin(), o.l.end());
                         }
 
                         vector<CES::CES_XY>* pack_load_system_ellipse() { return &l; }
@@ -1642,6 +1959,383 @@ class CES {
                             }
                     };
             };
-    #endif
+        #endif
+        
+        #ifdef CES_INPUT_UNIT
+            enum CES_Key_Inputs {
+                INVALID,                /*@brief Used for NO Key.*/
+                A,                      /*@brief Used for the Key: "A"*/
+                B,                      /*@brief Used for the Key: "B"*/
+                C,                      /*@brief Used for the Key: "C"*/
+                D,                      /*@brief Used for the Key: "D"*/
+                E,                      /*@brief Used for the Key: "E"*/
+                F,                      /*@brief Used for the Key: "F"*/
+                G,                      /*@brief Used for the Key: "G"*/
+                H,                      /*@brief Used for the Key: "H"*/
+                I,                      /*@brief Used for the Key: "I"*/
+                J,                      /*@brief Used for the Key: "J"*/
+                K,                      /*@brief Used for the Key: "K"*/
+                L,                      /*@brief Used for the Key: "L"*/
+                M,                      /*@brief Used for the Key: "M"*/
+                N,                      /*@brief Used for the Key: "N"*/
+                O,                      /*@brief Used for the Key: "O"*/
+                P,                      /*@brief Used for the Key: "P"*/
+                Q,                      /*@brief Used for the Key: "Q"*/
+                R,                      /*@brief Used for the Key: "R"*/
+                S,                      /*@brief Used for the Key: "S"*/
+                T,                      /*@brief Used for the Key: "T"*/
+                U,                      /*@brief Used for the Key: "U"*/
+                V,                      /*@brief Used for the Key: "V"*/
+                W,                      /*@brief Used for the Key: "W"*/
+                X,                      /*@brief Used for the Key: "X"*/
+                Y,                      /*@brief Used for the Key: "Y"*/
+                Z,                      /*@brief Used for the Key: "Z"*/
+                DIGIT_0,                /*@brief Used for the Key: "0" -- On the main block*/
+                DIGIT_1,                /*@brief Used for the Key: "1" -- On the main block*/
+                DIGIT_2,                /*@brief Used for the Key: "2" -- On the main block*/
+                DIGIT_3,                /*@brief Used for the Key: "3" -- On the main block*/
+                DIGIT_4,                /*@brief Used for the Key: "4" -- On the main block*/
+                DIGIT_5,                /*@brief Used for the Key: "5" -- On the main block*/
+                DIGIT_6,                /*@brief Used for the Key: "6" -- On the main block*/
+                DIGIT_7,                /*@brief Used for the Key: "7" -- On the main block*/
+                DIGIT_8,                /*@brief Used for the Key: "8" -- On the main block*/
+                DIGIT_9,                /*@brief Used for the Key: "9" -- On the main block*/
+                ESCAPE,                 /*@brief Used for the Key: "ESC"*/
+                TAB,                    /*@brief Used for the Key: "TABULATOR"*/
+                CAPS_LOCK,              /*@brief Used for the Key: "CAPS LOCK"*/
+                SHIFT_L,                /*@brief Used for the Key: "Shift Left"*/
+                SHIFT_R,                /*@brief Used for the Key: "Shift Right"*/
+                CTRL_L,                 /*@brief Used for the Key: "Control Left"*/
+                CTRL_R,                 /*@brief Used for the Key: "Control Right"*/
+                ALT,                    /*@brief Used for the Key: "ALT"*/
+                ALT_GR,                 /*@brief Used for the Key: "ALT GR"*/
+                WIN_L,                  /*@brief Used for the Key: "Windows Left"*/
+                WIN_R,                  /*@brief Used for the Key: "Windows Right"*/
+                ENTER,                  /*@brief Used for the Key: "ENTER"*/
+                BACKSPACE,              /*@brief Used for the Key: "BACKSPACE"*/
+                SPACE,                  /*@brief Used for the Key: "Space"*/
+                F1,                     /*@brief Used for the Key: "F1"*/
+                F2,                     /*@brief Used for the Key: "F2"*/
+                F3,                     /*@brief Used for the Key: "F3"*/
+                F4,                     /*@brief Used for the Key: "F4"*/
+                F5,                     /*@brief Used for the Key: "F5"*/
+                F6,                     /*@brief Used for the Key: "F6"*/
+                F7,                     /*@brief Used for the Key: "F7"*/
+                F8,                     /*@brief Used for the Key: "F8"*/
+                F9,                     /*@brief Used for the Key: "F9"*/
+                F10,                    /*@brief Used for the Key: "F10"*/
+                F11,                    /*@brief Used for the Key: "F11"*/
+                F12,                    /*@brief Used for the Key: "F12"*/
+                F13,                    /*@brief Used for the Key: "F13" -- Not used on many Keyboards*/
+                F14,                    /*@brief Used for the Key: "F14" -- Not used on many Keyboards*/
+                F15,                    /*@brief Used for the Key: "F15" -- Not used on many Keyboards*/
+                F16,                    /*@brief Used for the Key: "F16" -- Not used on many Keyboards*/
+                F17,                    /*@brief Used for the Key: "F17" -- Not used on many Keyboards*/
+                F18,                    /*@brief Used for the Key: "F18" -- Not used on many Keyboards*/
+                F19,                    /*@brief Used for the Key: "F19" -- Not used on many Keyboards*/
+                F20,                    /*@brief Used for the Key: "F20" -- Not used on many Keyboards*/
+                F21,                    /*@brief Used for the Key: "F21" -- Not used on many Keyboards*/
+                F22,                    /*@brief Used for the Key: "F22" -- Not used on many Keyboards*/
+                F23,                    /*@brief Used for the Key: "F23" -- Not used on many Keyboards*/
+                F24,                    /*@brief Used for the Key: "F24" -- Not used on many Keyboards*/
+                PRINT,                  /*@brief Used for the Key: "Print Screen" -- Not used on every Keyboard*/
+                SCROLL,                 /*@brief Used for the Key: "Scroll Lock" -- Not used on every Keyboard*/
+                PAUSE,                  /*@brief Used for the Key: "Pause/Break" -- Not used on every Keyboard*/
+                INSERT,                 /*@brief Used for the Key: "Insert" -- Not used on every Keyboard*/
+                DEL,                    /*@brief Used for the Key: "Delete" -- Not used on every Keyboard*/
+                HOME,                   /*@brief Used for the Key: "Home/Pos1" -- Not used on every Keyboard*/
+                END,                    /*@brief Used for the Key: "END" -- Not used on every Keyboard*/
+                PAGE_UP,                /*@brief Used for the Key: "Page Up" -- Not used on every Keyboard*/
+                PAGE_DOWN,              /*@brief Used for the Key: "Page Down" -- Not used on every Keyboard*/
+                ARROW_UP,               /*@brief Used for the Key: "Arrow Up" -- Not used on every Keyboard*/
+                ARROW_DOWN,             /*@brief Used for the Key: "Arrow Down" -- Not used on every Keyboard*/
+                ARROW_LEFT,             /*@brief Used for the Key: "Arrow Left" -- Not used on every Keyboard*/
+                ARROW_RIGHT,            /*@brief Used for the Key: "Arrow Right" -- Not used on every Keyboard*/
+                NUM_0,                  /*@brief Used for the Key: "Numblock-0" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_1,                  /*@brief Used for the Key: "Numblock-1" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_2,                  /*@brief Used for the Key: "Numblock-2" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_3,                  /*@brief Used for the Key: "Numblock-3" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_4,                  /*@brief Used for the Key: "Numblock-4" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_5,                  /*@brief Used for the Key: "Numblock-5" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_6,                  /*@brief Used for the Key: "Numblock-6" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_7,                  /*@brief Used for the Key: "Numblock-7" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_8,                  /*@brief Used for the Key: "Numblock-8" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_9,                  /*@brief Used for the Key: "Numblock-9" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_LOCK,               /*@brief Used for the Key: "Num Lock" -- Not used on every Keyboard*/
+                NUM_ADD,                /*@brief Used for the Key: "+" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_SUBTRACT,           /*@brief Used for the Key: "-" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_MULTIPLE,           /*@brief Used for the Key: "*" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_DIVIDE,             /*@brief Used for the Key: "/" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_ENTER,              /*@brief Used for the Key: "Enter" -- Not used on every Keyboard -- Only on the Numblock*/
+                NUM_DOT                 /*@brief Used for the Key: ". (Decimal Separator)" -- Not used on every Keyboard -- Only on the Numblock*/
+            };
 
+            #if defined(_WIN32)
+                // Windows Definition Class for Inputs
+                class CES_Input {
+                    public:
+                        CES_Input() {
+                            flags.fill(false);
+                            pressed.fill(false);
+                        }
+
+                        ~CES_Input() {
+                            FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
+                        }
+
+                        // Muss einmal pro Frame / Tick aufgerufen werden
+                        void update() {
+                            for (int vk = 0; vk < 256; ++vk) {
+                                CES_Key_Inputs key = map_VKCode_to_enum(vk);
+                                if (key <= CES_Key_Inputs(0) || key > NUM_DOT)
+                                    continue;
+
+                                bool isDownNow = (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+                                pressed[key] = isDownNow && !flags[key];
+                                flags[key]   = isDownNow;
+                            }
+                        }
+
+                        bool isDown(CES_Key_Inputs key) const {
+                            return (key <= NUM_DOT) ? flags[key] : false;
+                        }
+
+                        bool isPressed(CES_Key_Inputs key) const {
+                            return (key <= NUM_DOT) ? pressed[key] : false;
+                        }
+
+                    private:
+                        std::array<bool, NUM_DOT + 1> flags{};
+                        std::array<bool, NUM_DOT + 1> pressed{};
+
+                        CES_Key_Inputs map_VKCode_to_enum(unsigned int code) {
+                            switch (code) {
+                                case 'A': return A; case 'B': return B; case 'C': return C;
+                                case 'D': return D; case 'E': return E; case 'F': return F;
+                                case 'G': return G; case 'H': return H; case 'I': return I;
+                                case 'J': return J; case 'K': return K; case 'L': return L;
+                                case 'M': return M; case 'N': return N; case 'O': return O;
+                                case 'P': return P; case 'Q': return Q; case 'R': return R;
+                                case 'S': return S; case 'T': return T; case 'U': return U;
+                                case 'V': return V; case 'W': return W; case 'X': return X;
+                                case 'Y': return Y; case 'Z': return Z;
+
+                                case '0': return DIGIT_0; case '1': return DIGIT_1; case '2': return DIGIT_2;
+                                case '3': return DIGIT_3; case '4': return DIGIT_4; case '5': return DIGIT_5;
+                                case '6': return DIGIT_6; case '7': return DIGIT_7; case '8': return DIGIT_8;
+                                case '9': return DIGIT_9;
+
+                                case VK_ESCAPE: return ESCAPE;
+                                case VK_TAB: return TAB;
+                                case VK_CAPITAL: return CAPS_LOCK;
+
+                                case VK_LSHIFT: return SHIFT_L;
+                                case VK_RSHIFT: return SHIFT_R;
+                                case VK_LCONTROL: return CTRL_L;
+                                case VK_RCONTROL: return CTRL_R;
+                                case VK_LMENU: return ALT;
+                                case VK_RMENU: return ALT_GR;
+
+                                case VK_LWIN: return WIN_L;
+                                case VK_RWIN: return WIN_R;
+
+                                case VK_RETURN: return ENTER;
+                                case VK_BACK: return BACKSPACE;
+                                case VK_SPACE: return SPACE;
+
+                                case VK_F1: return F1;   case VK_F2: return F2;
+                                case VK_F3: return F3;   case VK_F4: return F4;
+                                case VK_F5: return F5;   case VK_F6: return F6;
+                                case VK_F7: return F7;   case VK_F8: return F8;
+                                case VK_F9: return F9;   case VK_F10: return F10;
+                                case VK_F11: return F11; case VK_F12: return F12;
+                                case VK_F13: return F13; case VK_F14: return F14;
+                                case VK_F15: return F15; case VK_F16: return F16;
+                                case VK_F17: return F17; case VK_F18: return F18;
+                                case VK_F19: return F19; case VK_F20: return F20;
+                                case VK_F21: return F21; case VK_F22: return F22;
+                                case VK_F23: return F23; case VK_F24: return F24;
+
+                                case VK_UP: return ARROW_UP;
+                                case VK_DOWN: return ARROW_DOWN;
+                                case VK_LEFT: return ARROW_LEFT;
+                                case VK_RIGHT: return ARROW_RIGHT;
+
+                                case VK_PRINT: return PRINT;
+                                case VK_SCROLL: return SCROLL;
+                                case VK_PAUSE: return PAUSE;
+
+                                case VK_INSERT: return INSERT;
+                                case VK_DELETE: return DEL;
+                                case VK_HOME: return HOME;
+                                case VK_END: return END;
+                                case VK_PRIOR: return PAGE_UP;
+                                case VK_NEXT: return PAGE_DOWN;
+
+                                case VK_NUMPAD0: return NUM_0;
+                                case VK_NUMPAD1: return NUM_1;
+                                case VK_NUMPAD2: return NUM_2;
+                                case VK_NUMPAD3: return NUM_3;
+                                case VK_NUMPAD4: return NUM_4;
+                                case VK_NUMPAD5: return NUM_5;
+                                case VK_NUMPAD6: return NUM_6;
+                                case VK_NUMPAD7: return NUM_7;
+                                case VK_NUMPAD8: return NUM_8;
+                                case VK_NUMPAD9: return NUM_9;
+
+                                case VK_NUMLOCK: return NUM_LOCK;
+                                case VK_ADD: return NUM_ADD;
+                                case VK_SUBTRACT: return NUM_SUBTRACT;
+                                case VK_MULTIPLY: return NUM_MULTIPLE;
+                                case VK_DIVIDE: return NUM_DIVIDE;
+                                case VK_DECIMAL: return NUM_DOT;
+                            }
+
+                            return CES_Key_Inputs(0); // INVALID
+                        }
+                };
+            #elif defined(__linux__)
+                class CES_Input {
+                    public:
+                        CES_Input() {
+                            disable_echo();
+                            dev = find_keyboard();
+                            if (dev.empty()) {
+                                std::cerr << "Kein Keyboard gefunden!\n";
+                                return;
+                            }
+
+                            fd = open(dev.c_str(), O_RDONLY | O_NONBLOCK);
+                            if (fd < 0) {
+                                std::cerr << "Fehler beim Öffnen: " << std::strerror(errno) << "\n";
+                                fd = -1;
+                                return;
+                            }
+
+                            // Alle Tasten initial auf "nicht gedrückt" setzen
+                            for (int i = 0; i <= NUM_DOT; ++i) {
+                                flags[CES_Key_Inputs(i)] = false;
+                            }
+                        }
+
+                        ~CES_Input() {
+                            enable_echo();
+                            if (fd >= 0) close(fd);
+                        }
+
+                        // Gibt zurück, ob die Taste aktuell gedrückt ist
+                        bool getCurState(CES_Key_Inputs input) {
+                            if (fd < 0) return false;
+
+                            input_event ev;
+                            ssize_t n;
+                            while ((n = read(fd, &ev, sizeof(ev))) > 0) {
+                                if (ev.type != EV_KEY) continue;
+
+                                CES_Key_Inputs key = map_evcode_to_enum(ev.code);
+                                if (key != CES_Key_Inputs(-1))
+                                    flags[key] = (ev.value == 1 || ev.value == 2);
+                            }
+                            return flags[input];
+                        }
+
+                        inline bool getLastState(CES_Key_Inputs input) { return flags[input]; }
+
+                    private:
+                        int fd;
+                        std::string dev;
+                        std::unordered_map<CES_Key_Inputs, bool> flags;
+
+                        std::string find_keyboard() {
+                            const std::string path = "/dev/input/by-path/";
+                            if (fs::exists(path)) {
+                                for (auto& entry : fs::directory_iterator(path)) {
+                                    if (entry.path().string().find("kbd") != std::string::npos)
+                                        return fs::canonical(entry.path()).string();
+                                }
+                            }
+
+                            std::ifstream file("/proc/bus/input/devices");
+                            std::string line;
+                            std::regex event_regex("event[0-9]+");
+                            while (std::getline(file, line)) {
+                                if (line.find("kbd") != std::string::npos) {
+                                    for (auto i = std::sregex_iterator(line.begin(), line.end(), event_regex);
+                                        i != std::sregex_iterator(); ++i) {
+                                        std::string dev = "/dev/input/" + (*i).str();
+                                        if (fs::exists(dev)) return dev;
+                                    }
+                                }
+                            }
+                            return "";
+                        }
+
+                        CES_Key_Inputs map_evcode_to_enum(unsigned int code) {
+                            switch (code) {
+                                case KEY_A: return A; case KEY_B: return B; case KEY_C: return C;
+                                case KEY_D: return D; case KEY_E: return E; case KEY_F: return F;
+                                case KEY_G: return G; case KEY_H: return H; case KEY_I: return I;
+                                case KEY_J: return J; case KEY_K: return K; case KEY_L: return L;
+                                case KEY_M: return M; case KEY_N: return N; case KEY_O: return O;
+                                case KEY_P: return P; case KEY_Q: return Q; case KEY_R: return R;
+                                case KEY_S: return S; case KEY_T: return T; case KEY_U: return U;
+                                case KEY_V: return V; case KEY_W: return W; case KEY_X: return X;
+                                case KEY_Y: return Y; case KEY_Z: return Z;
+
+                                case KEY_0: return DIGIT_0; case KEY_1: return DIGIT_1; case KEY_2: return DIGIT_2;
+                                case KEY_3: return DIGIT_3; case KEY_4: return DIGIT_4; case KEY_5: return DIGIT_5;
+                                case KEY_6: return DIGIT_6; case KEY_7: return DIGIT_7; case KEY_8: return DIGIT_8;
+                                case KEY_9: return DIGIT_9;
+
+                                case KEY_ESC: return ESCAPE; case KEY_TAB: return TAB; case KEY_CAPSLOCK: return CAPS_LOCK;
+                                case KEY_LEFTSHIFT: return SHIFT_L; case KEY_RIGHTSHIFT: return SHIFT_R;
+                                case KEY_LEFTCTRL: return CTRL_L; case KEY_RIGHTCTRL: return CTRL_R;
+                                case KEY_LEFTALT: return ALT; case KEY_RIGHTALT: return ALT_GR;
+                                case KEY_LEFTMETA: return WIN_L; case KEY_RIGHTMETA: return WIN_R;
+
+                                case KEY_ENTER: return ENTER; case KEY_BACKSPACE: return BACKSPACE; case KEY_SPACE: return SPACE;
+
+                                case KEY_F1: return F1; case KEY_F2: return F2; case KEY_F3: return F3; case KEY_F4: return F4;
+                                case KEY_F5: return F5; case KEY_F6: return F6; case KEY_F7: return F7; case KEY_F8: return F8;
+                                case KEY_F9: return F9; case KEY_F10: return F10; case KEY_F11: return F11; case KEY_F12: return F12;
+
+                                case KEY_UP: return ARROW_UP; case KEY_DOWN: return ARROW_DOWN;
+                                case KEY_LEFT: return ARROW_LEFT; case KEY_RIGHT: return ARROW_RIGHT;
+
+                                case KEY_PRINT: return PRINT; case KEY_SCROLLLOCK: return SCROLL; case KEY_PAUSE: return PAUSE;
+                                case KEY_INSERT: return INSERT; case KEY_DELETE: return DEL; case KEY_HOME: return HOME;
+                                case KEY_END: return END; case KEY_PAGEUP: return PAGE_UP; case KEY_PAGEDOWN: return PAGE_DOWN;
+
+                                case KEY_KP0: return NUM_0; case KEY_KP1: return NUM_1; case KEY_KP2: return NUM_2;
+                                case KEY_KP3: return NUM_3; case KEY_KP4: return NUM_4; case KEY_KP5: return NUM_5;
+                                case KEY_KP6: return NUM_6; case KEY_KP7: return NUM_7; case KEY_KP8: return NUM_8;
+                                case KEY_KP9: return NUM_9;
+                                case KEY_NUMLOCK: return NUM_LOCK; case KEY_KPPLUS: return NUM_ADD; case KEY_KPMINUS: return NUM_SUBTRACT;
+                                case KEY_KPASTERISK: return NUM_MULTIPLE; case KEY_KPSLASH: return NUM_DIVIDE; case KEY_KPENTER: return NUM_ENTER;
+                                case KEY_KPDOT: return NUM_DOT;
+                            }
+                            return CES_Key_Inputs(-1);
+                        }
+
+                        void disable_echo() {
+                            termios t;
+                            tcgetattr(STDIN_FILENO, &t);     // aktuelle Terminaleinstellungen holen
+                            t.c_lflag &= ~ECHO;              // ECHO-Flag ausschalten
+                            tcsetattr(STDIN_FILENO, TCSANOW, &t); // Einstellungen sofort anwenden
+                        }
+
+                        // Funktion, um Echo wieder einzuschalten
+                        void enable_echo() {
+                            termios t;
+                            tcgetattr(STDIN_FILENO, &t);
+                            t.c_lflag |= ECHO;               // ECHO-Flag wieder einschalten
+                            tcsetattr(STDIN_FILENO, TCSANOW, &t);
+                        }
+                    };
+
+            #elif defined(__APPLE__)
+                    /* Not tested or even made. */
+            #endif
+        #endif
 };
