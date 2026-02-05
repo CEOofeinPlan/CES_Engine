@@ -776,8 +776,13 @@ class CES {
                                 if (!set) {
                                     goto normal_set;
                                 }
+                                if (c.x+1 == old.x && c.y == old.y) {
+                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
+                                }
                                 if (old.ARGB == c.ARGB) {
                                     thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
                                 } else {
                                     if (old.c != U'\0') thread_0 += "\033[0m";
                                     goto normal_set;
@@ -816,30 +821,44 @@ class CES {
                             int y_end = y / 2;
                             // ! --> END for thread 0 is in the middle of the ENTIRE screen.
 
+                            /*Making ANSI more easier for the terminal*/
                             CES_XY old;
+                            bool set = false;
 
                             for (auto c : *main) {
                                 if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
-                                if (c.c == NULL) continue;
+                                if (c.c == U'\0') continue;
+                                if (!set) {
+                                    goto normal_set;
+                                }
+                                if (c.x+1 == old.x && c.y == old.y) {
+                                    thread_1 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
+                                }
                                 if (old.ARGB == c.ARGB) {
                                     thread_1 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
                                 } else {
-                                    if (old.c != NULL) thread_1 += "\033[0m";
-                                    thread_1 += "\033[" + to_string(c.y+1) + ";" + to_string(x+1) + "H";
+                                    if (old.c != U'\0') thread_1 += "\033[0m";
+                                    goto normal_set;
+                                }
+
+                                normal_set:
+                                    thread_1 += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
                                     thread_1 += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
                                         to_string((int)c.ARGB.g) + ";" +
                                         to_string((int)c.ARGB.b) + "m";
                                     thread_1 += c.convertCHAR32toCHAR(c.c);
                                     old = c;
-                                }
+                                    set = true;
                             }
 
                             remaining.fetch_sub(1, memory_order_release);
                         });
 
                         // Thread 2
-                        pool.enqueue([&main, &size, &thread_0, &frame_0, &remaining, this]() {
+                        pool.enqueue([&main, &size, &thread_2, &remaining]() {
                             // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
                             int x = size.first;
                             // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
@@ -857,48 +876,92 @@ class CES {
                             int y_end = y;
                             // ! --> END for thread 0 is in the middle of the ENTIRE screen.
 
+                            /*Making ANSI more easier for the terminal*/
+                            CES_XY old;
+                            bool set = false;
+
                             for (auto c : *main) {
                                 if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
-                                if (c.c == NULL) continue;
+                                if (c.c == U'\0') continue;
+                                if (!set) {
+                                    goto normal_set;
+                                }
+                                if (c.x+1 == old.x && c.y == old.y) {
+                                    thread_2 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
+                                }
                                 if (old.ARGB == c.ARGB) {
-                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    thread_2 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
                                 } else {
-                                    if (old.c != NULL) thread_0 += "\033[0m";
-                                    thread_0 += "\033[" + to_string(c.y+1) + ";" + to_string(x+1) + "H";
-                                    thread_0 += "\033[38;2;" +
+                                    if (old.c != U'\0') thread_2 += "\033[0m";
+                                    goto normal_set;
+                                }
+
+                                normal_set:
+                                    thread_2 += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                                    thread_2 += "\033[38;2;" +
                                         to_string((int)c.ARGB.r) + ";" +
                                         to_string((int)c.ARGB.g) + ";" +
                                         to_string((int)c.ARGB.b) + "m";
-                                    thread_0 += c.convertCHAR32toCHAR(c.c);
+                                    thread_2 += c.convertCHAR32toCHAR(c.c);
                                     old = c;
-                                }
+                                    set = true;
                             }
 
                             remaining.fetch_sub(1, memory_order_release);
                         });
 
                         // Thread 3
-                        pool.enqueue([&main, &size, &thread_0, &frame_0, &remaining, this]() {
+                        pool.enqueue([&main, &size, &thread_3, &remaining]() {
                             // Current x position of a cell; Firstly declared with the maximum of the terminal x to calculate the 'x_end' for this thread area.
                             int x = size.first;
                             // Current y position of a cell; Firstly declared with the maximum of the terminal y to calculate the 'y_end' for this thread area.
                             int y = size.second;
 
                             // 'x_start' used to define the START for x for the area of this thread.
-                            int x_start = 0;
+                            int x_start = 0; 
                             // Same applies for the y.
                             int y_start = y/2;
                             // ! --> START for thread 0 is in the UPPER LEFT CORNER.
 
                             // 'x_end' used to define the END for x for the area of this thread.
-                            int x_end = x/2;
+                            int x_end = x / 2;
                             // Same applies for the y.
                             int y_end = y;
                             // ! --> END for thread 0 is in the middle of the ENTIRE screen.
 
+                            /*Making ANSI more easier for the terminal*/
+                            CES_XY old;
+                            bool set = false;
+
                             for (auto c : *main) {
                                 if (c.x < x_start || c.x >= x_end || c.y < y_start || c.y >= y_end) continue;
-                                this->set(c.x, c.y, thread_0, c);
+                                if (c.c == U'\0') continue;
+                                if (!set) {
+                                    goto normal_set;
+                                }
+                                if (c.x+1 == old.x && c.y == old.y) {
+                                    thread_3 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
+                                }
+                                if (old.ARGB == c.ARGB) {
+                                    thread_3 += c.convertCHAR32toCHAR(c.c);
+                                    continue;
+                                } else {
+                                    if (old.c != U'\0') thread_3 += "\033[0m";
+                                    goto normal_set;
+                                }
+
+                                normal_set:
+                                    thread_3 += "\033[" + to_string(c.y+1) + ";" + to_string(c.x+1) + "H";
+                                    thread_3 += "\033[38;2;" +
+                                        to_string((int)c.ARGB.r) + ";" +
+                                        to_string((int)c.ARGB.g) + ";" +
+                                        to_string((int)c.ARGB.b) + "m";
+                                    thread_3 += c.convertCHAR32toCHAR(c.c);
+                                    old = c;
+                                    set = true;
                             }
 
                             remaining.fetch_sub(1, memory_order_release);
@@ -908,6 +971,11 @@ class CES {
                             this_thread::yield();
                             this_thread::sleep_for(chrono::milliseconds(1));
                         }
+
+                        write(STDOUT_FILENO, thread_0.data(), thread_0.size());
+                        write(STDOUT_FILENO, thread_1.data(), thread_1.size());
+                        write(STDOUT_FILENO, thread_2.data(), thread_2.size());
+                        write(STDOUT_FILENO, thread_3.data(), thread_3.size());
                     }
 
                     inline void writeCell(CES::CES_XY& xy) {
